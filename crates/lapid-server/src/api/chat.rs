@@ -50,6 +50,25 @@ struct Sampling {
     seed: Option<i64>,
     repetition_penalty: Option<f32>,
     n: Option<usize>,
+    /// lapid extension: steering files by name with scales (`{}` or `false`: none).
+    steer: Option<Value>,
+}
+
+/// `"steer": {"name": scale, ...}` (or `false` / `{}` for none; `null` = server default).
+fn parse_steer(v: Option<Value>) -> ApiResult<Option<Vec<(String, f32)>>> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(false)) => Ok(Some(Vec::new())),
+        Some(Value::Object(m)) => m
+            .into_iter()
+            .map(|(k, v)| match v.as_f64() {
+                Some(x) if x.is_finite() => Ok((k, x as f32)),
+                _ => Err(ApiError::bad_request(format!("\"steer\": the scale of {k:?} must be a number"))),
+            })
+            .collect::<ApiResult<Vec<_>>>()
+            .map(Some),
+        Some(_) => Err(ApiError::bad_request("\"steer\" must be an object {\"name\": scale} or false")),
+    }
 }
 
 impl Sampling {
@@ -65,6 +84,7 @@ impl Sampling {
             repetition_penalty: self.repetition_penalty,
             seed: self.seed.map(|s| s as u64),
             stop: self.stop.map(OneOrMany::into_vec).unwrap_or_default(),
+            steer: parse_steer(self.steer)?,
         })
     }
 }

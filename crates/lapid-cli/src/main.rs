@@ -47,6 +47,9 @@ enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Print the metadata and vectors (hook, op, scale, layers) of an activation steering
+    /// file as JSON (`lapid run/serve --steer FILE`; docs/STEERING.md).
+    Steer { file: PathBuf },
     /// Verify a model against reference activations (tools/reference/<model>_ref.py).
     Verify {
         /// Model family (see `lapid_hub::cmd::MODELS`), e.g. whisper.
@@ -163,6 +166,10 @@ fn run(cli: Cli) -> Result<bool> {
             println!("{}", pretty(&v)?);
             Ok(true)
         }
+        Command::Steer { file } => {
+            println!("{}", pretty(&lapid_hub::runtime::steer::info(&file)?)?);
+            Ok(true)
+        }
         Command::Verify { model, reference, model_args } => {
             let v = lapid_hub::cmd::verify(&model, reference.as_deref(), &model_args.hub())?;
             println!("{}", pretty(&v)?);
@@ -240,6 +247,8 @@ mod tests {
         assert!(matches!(cli.command, Command::Run(a) if a.load.no_mmap && !a.load.mmap));
         let cli = Cli::try_parse_from(["lapid", "run", "m.lapid", "--expert-cache", "40.5", "-p", "hi"]).expect("parse");
         assert!(matches!(cli.command, Command::Run(a) if a.load.expert_cache == Some(40.5)));
+        let cli = Cli::try_parse_from(["lapid", "run", "m.lapid", "--steer", "a.safetensors", "--steer", "b.safetensors:0.5", "-p", "hi"]).expect("parse");
+        assert!(matches!(cli.command, Command::Run(a) if a.load.steer == ["a.safetensors", "b.safetensors:0.5"]));
         let cli = Cli::try_parse_from(["lapid", "bench", "llama", "--mmap"]).expect("parse");
         assert!(matches!(cli.command, Command::Bench { model_args, .. } if model_args.mmap));
         let cli = Cli::try_parse_from(["lapid", "convert", "a/b", "--dtype", "q5_k"]).expect("parse");

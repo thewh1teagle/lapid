@@ -48,6 +48,7 @@ fn build() -> Value {
         "seed": {"type": "integer"},
         "repetition_penalty": {"type": "number"},
         "n": {"type": "integer", "enum": [1]},
+        "steer": {"oneOf": [{"type": "object", "additionalProperties": {"type": "number"}}, {"type": "boolean", "enum": [false]}], "description": "lapid: steering files (loaded with --steer) by name with scale multipliers, e.g. {\"deepseek41-heretic\": 1}; {} or false = none; omitted = the server's default (docs/STEERING.md)"},
         "stream": {"type": "boolean", "description": "Server-sent events"},
         "stream_options": {"type": "object", "properties": {"include_usage": {"type": "boolean"}}}
     });

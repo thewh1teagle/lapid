@@ -3,12 +3,19 @@
 //! `GenerateOptions`); [`ChatLm`] names it once so a single [`LlmServed`] serves all of them
 //! with a small pool of sessions: a request reuses the session whose consumed tokens are a
 //! prefix of its prompt (the earlier turns of a conversation), so only the new tokens are
-//! prefilled.
+//! prefilled. Steering files given at load are applied per request (by name with
+//! multipliers); a session is only reused under the steering its state was computed with.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use lapid::{Error, Result};
+use serde_json::{Value, json};
 use crate::runtime::causal_lm::{CausalLm, Llm};
 use crate::runtime::generate::{FinishReason, GenerateOptions, TokenStream};
 use crate::runtime::session::Session;
+use crate::runtime::steer::{SteerFile, Steering};
 use crate::ModelInfo;
 use lapid_nn::SamplingParams;
 
@@ -29,6 +36,14 @@ pub trait ChatLm {
     fn think_markers(&self) -> (&'static str, &'static str) {
         ("<think>", "</think>")
     }
+    /// Read a steering file and check that it fits the model.
+    fn load_steering(&self, path: &Path) -> Result<SteerFile>;
+    /// Steering of `(file, multiplier)`s (`None`: nothing applies).
+    fn steering(&self, parts: &[(&SteerFile, f32)]) -> Result<Option<Arc<Steering>>>;
+    /// Steer a session (resets it when the steering differs from its state's).
+    fn set_steering(s: &mut Self::Session, steering: Option<Arc<Steering>>);
+    /// Key of a session's steering.
+    fn session_steering(s: &Self::Session) -> Option<&str>;
 }
 
 impl<M: CausalLm> ChatLm for Llm<M> {
@@ -57,6 +72,18 @@ impl<M: CausalLm> ChatLm for Llm<M> {
     fn think_markers(&self) -> (&'static str, &'static str) {
         Llm::think_markers(self)
     }
+    fn load_steering(&self, path: &Path) -> Result<SteerFile> {
+        Llm::load_steering(self, path)
+    }
+    fn steering(&self, parts: &[(&SteerFile, f32)]) -> Result<Option<Arc<Steering>>> {
+        Llm::steering(self, parts)
+    }
+    fn set_steering(s: &mut Self::Session, steering: Option<Arc<Steering>>) {
+        s.set_steering(steering);
+    }
+    fn session_steering(s: &Self::Session) -> Option<&str> {
+        s.steering().map(|st| st.key())
+    }
 }
 
 
@@ -73,27 +100,76 @@ pub struct LlmServed<M: ChatLm> {
     max_slots: usize,
     clock: u64,
     defaults: GenParams,
+    /// Steering files (unique names) and the startup selection (name, multiplier).
+    steer_files: Vec<SteerFile>,
+    steer_default: Vec<(String, f32)>,
+    /// Built steerings by selection.
+    steer_built: HashMap<String, Option<Arc<Steering>>>,
 }
 
 impl<M: ChatLm> LlmServed<M> {
-    pub fn new(model: M, meta: ModelMeta, opts: &super::LoadOptions) -> LlmServed<M> {
+    pub fn new(model: M, meta: ModelMeta, opts: &super::LoadOptions) -> Result<LlmServed<M>> {
         let mut meta = meta;
         meta.capabilities = vec![Capability::Chat, Capability::Completion];
         let max_slots = opts.sessions.max(1);
-        LlmServed { model, meta, slots: Vec::new(), max_slots, clock: 0, defaults: opts.defaults.clone() }
+        let (mut steer_files, mut steer_default) = (Vec::<SteerFile>::new(), Vec::new());
+        let mut listed = Vec::new();
+        for spec in &opts.steer {
+            let f = model.load_steering(&spec.path)?;
+            if steer_files.iter().any(|g| g.name == f.name) {
+                return Err(Error::new("invalid_argument", format!("two steering files are named {:?}", f.name)));
+            }
+            let mut d = f.describe();
+            d["default_scale"] = json!(spec.scale);
+            listed.push(d);
+            steer_default.push((f.name.clone(), spec.scale));
+            steer_files.push(f);
+        }
+        if !listed.is_empty() {
+            meta.extra.insert("steering".into(), Value::Array(listed));
+        }
+        Ok(LlmServed { model, meta, slots: Vec::new(), max_slots, clock: 0, defaults: opts.defaults.clone(), steer_files, steer_default, steer_built: HashMap::new() })
     }
 
-    /// The session to run `prompt` on: the longest cached prefix, else a new or the least
-    /// recently used one (its state is reset by the generation).
-    fn pick_slot(&mut self, prompt: &[u32]) -> usize {
+    /// The steering of a request's selection (`None`: the startup one).
+    fn steering(&mut self, sel: Option<&[(String, f32)]>) -> Result<Option<Arc<Steering>>> {
+        let sel = sel.unwrap_or(&self.steer_default);
+        let key = sel.iter().map(|(n, m)| format!("{n}*{m}")).collect::<Vec<_>>().join("+");
+        if let Some(s) = self.steer_built.get(&key) {
+            return Ok(s.clone());
+        }
+        let mut parts = Vec::with_capacity(sel.len());
+        for (name, mult) in sel {
+            let f = self.steer_files.iter().find(|f| &f.name == name).ok_or_else(|| {
+                let have: Vec<&str> = self.steer_files.iter().map(|f| f.name.as_str()).collect();
+                Error::new("invalid_argument", format!("unknown steering {name:?} (loaded: {have:?})"))
+            })?;
+            if !mult.is_finite() {
+                return Err(Error::new("invalid_argument", format!("steering {name:?}: scale must be finite")));
+            }
+            parts.push((f, *mult));
+        }
+        let built = self.model.steering(&parts)?;
+        if self.steer_built.len() >= 16 {
+            self.steer_built.clear();
+        }
+        self.steer_built.insert(key, built.clone());
+        Ok(built)
+    }
+
+    /// The session to run `prompt` under `steering` on: the longest cached prefix computed
+    /// with the same steering, else a new or the least recently used one (its state is reset
+    /// by the generation).
+    fn pick_slot(&mut self, prompt: &[u32], steering: Option<Arc<Steering>>) -> usize {
         self.clock += 1;
+        let key = steering.as_ref().map(|s| s.key());
         let best = self
             .slots
             .iter()
             .enumerate()
             .filter(|(_, s)| {
                 let t = M::session_tokens(&s.session);
-                !t.is_empty() && t.len() < prompt.len() && prompt[..t.len()] == *t
+                M::session_steering(&s.session) == key && !t.is_empty() && t.len() < prompt.len() && prompt[..t.len()] == *t
             })
             .max_by_key(|(_, s)| M::session_tokens(&s.session).len())
             .map(|(i, _)| i);
@@ -106,6 +182,7 @@ impl<M: ChatLm> LlmServed<M> {
             None => self.slots.iter().enumerate().min_by_key(|(_, s)| s.last_used).map_or(0, |(i, _)| i),
         };
         self.slots[i].last_used = self.clock;
+        M::set_steering(&mut self.slots[i].session, steering);
         i
     }
 
@@ -119,6 +196,7 @@ impl<M: ChatLm> LlmServed<M> {
             repetition_penalty: g.repetition_penalty.or(d.repetition_penalty),
             seed: g.seed.or(d.seed),
             stop: Vec::new(),
+            steer: None,
         };
         let mut s = self.model.recommended();
         if let Some(t) = g.temperature {
@@ -151,7 +229,8 @@ impl<M: ChatLm> LlmServed<M> {
             stop_strings: Vec::new(),
             cancel: None,
         };
-        let slot = self.pick_slot(&ids);
+        let steering = self.steering(g.steer.as_deref())?;
+        let slot = self.pick_slot(&ids, steering);
         let mut filter = OutputFilter::new(think, &g.stop);
         let model = &self.model;
         let session = &mut self.slots[slot].session;

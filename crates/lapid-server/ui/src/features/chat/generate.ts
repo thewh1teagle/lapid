@@ -2,9 +2,9 @@ import { toast } from "sonner";
 import { type ChatRequest, errorMessage } from "@/lib/api";
 import { streamChat } from "@/lib/sse";
 import { type Message, type MessageStats, useConversations, useStream } from "@/stores/conversations";
-import { type Sampling, useSettings } from "@/stores/settings";
+import { type Sampling, type SteerChoice, useSettings } from "@/stores/settings";
 
-function buildRequest(model: string, system: string, history: Message[], s: Sampling): ChatRequest {
+function buildRequest(model: string, system: string, history: Message[], s: Sampling, steer?: Record<string, SteerChoice>): ChatRequest {
   const messages: ChatRequest["messages"] = [];
   if (system.trim()) messages.push({ role: "system", content: system.trim() });
   for (const m of history) {
@@ -29,6 +29,7 @@ function buildRequest(model: string, system: string, history: Message[], s: Samp
     ...(stop.length ? { stop } : {}),
     ...(seed !== undefined && Number.isFinite(seed) ? { seed } : {}),
     chat_template_kwargs: { enable_thinking: s.enable_thinking },
+    ...(steer ? { steer: Object.fromEntries(Object.entries(steer).filter(([, c]) => c.enabled).map(([n, c]) => [n, c.scale])) } : {}),
   };
 }
 
@@ -47,7 +48,8 @@ export async function generateReply(convId: string, model: string): Promise<void
   const controller = new AbortController();
   stream.start(convId, msgId, controller);
 
-  const req = buildRequest(model, conv.systemPrompt, history, useSettings.getState().sampling);
+  const settings = useSettings.getState();
+  const req = buildRequest(model, conv.systemPrompt, history, settings.sampling, settings.steer[model]);
   const t0 = performance.now();
   let firstToken = 0;
   let content = "";

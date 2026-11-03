@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { Switch } from "@/components/ui/switch";
 import { DEFAULT_SAMPLING, type Sampling, useSettings } from "@/stores/settings";
 import { useConversations } from "@/stores/conversations";
+import { SteeringSection } from "./steering-section";
 
 const schema = z.object({
   temperature: z.number({ error: "Required" }).min(0).max(2),
@@ -91,6 +92,7 @@ export function SettingsSheet({ convId }: { convId: string | null }) {
               render={({ field }) => <Switch id="enable-thinking" checked={field.value} onCheckedChange={field.onChange} />}
             />
           </div>
+          <SteeringSection />
           <div className="grid grid-cols-2 gap-4">
             {NUMERIC.map(({ key, label, step, hint }) => (
               <div key={key} className="space-y-1.5">

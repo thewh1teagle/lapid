@@ -22,6 +22,18 @@ export interface ModelInfo {
   sample_rate?: number;
   embedding_dim?: number;
   prompts?: string[];
+  /** Activation steering files loaded with the model (`lapid serve --steer`). */
+  steering?: SteeringInfo[];
+}
+
+export interface SteeringInfo {
+  name: string;
+  description?: string;
+  /** Multiplier applied when a request does not choose (0 = loaded but off). */
+  default_scale: number;
+  source?: string;
+  license?: string;
+  entries?: { hook: string; op: string; scale: number; layers: string }[];
 }
 
 export interface ServerInfo {
@@ -73,6 +85,8 @@ export interface ChatRequest {
   seed?: number;
   repetition_penalty?: number;
   chat_template_kwargs?: { enable_thinking: boolean };
+  /** Steering files by name with multipliers ({} = none); omitted = the server's default. */
+  steer?: Record<string, number>;
 }
 
 export interface TranscriptionSegment {

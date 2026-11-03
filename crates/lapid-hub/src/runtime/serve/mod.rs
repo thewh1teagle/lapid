@@ -28,11 +28,14 @@ pub struct LoadOptions {
     pub sessions: usize,
     /// Server-side sampling defaults (used when a request leaves a field unset).
     pub defaults: GenParams,
+    /// Activation steering files loaded with every chat model, on by default with their
+    /// multipliers (requests choose with [`GenParams::steer`]).
+    pub steer: Vec<super::steer::SteerSpec>,
 }
 
 impl Default for LoadOptions {
     fn default() -> Self {
-        LoadOptions { dtype: None, sessions: 4, defaults: GenParams::default() }
+        LoadOptions { dtype: None, sessions: 4, defaults: GenParams::default(), steer: Vec::new() }
     }
 }
 
@@ -90,7 +93,7 @@ pub fn load(source: &str, id: Option<String>, device: &Device, opts: &LoadOption
 
 /// Serve adapter of any causal LM (registry `serve` entry).
 pub fn serve_lm<M: super::causal_lm::CausalLm>(path: &Path, device: &Device, meta: ModelMeta, opts: &LoadOptions) -> Result<Box<dyn AnyModel>> {
-    Ok(Box::new(llm::LlmServed::new(super::causal_lm::Llm::<M>::load(path, device)?, meta, opts)))
+    Ok(Box::new(llm::LlmServed::new(super::causal_lm::Llm::<M>::load(path, device)?, meta, opts)?))
 }
 
 /// What a model serves.
@@ -143,6 +146,9 @@ pub struct GenParams {
     pub seed: Option<u64>,
     /// Stop strings (the matched string is not returned).
     pub stop: Vec<String>,
+    /// Steering files by name with multipliers, replacing the startup selection (empty:
+    /// none); `None` = the startup selection.
+    pub steer: Option<Vec<(String, f32)>>,
 }
 
 #[derive(Clone, Debug, Default)]

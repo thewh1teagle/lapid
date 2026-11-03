@@ -11,6 +11,7 @@ use lapid::{Error, Result};
 
 use crate::load::LoadOptions;
 use lapid_hub::runtime::serve::GenParams;
+use lapid_hub::runtime::steer::SteerSpec;
 
 /// llama.cpp's multi-letter single-dash flags and their long forms.
 const LLAMA_SHORT: &[(&str, &str)] = &[
@@ -64,6 +65,7 @@ impl SamplingArgs {
             repetition_penalty: self.repeat_penalty,
             seed: self.seed.and_then(|s| u64::try_from(s).ok()),
             stop: Vec::new(),
+            steer: None,
         }
     }
 }
@@ -113,11 +115,17 @@ pub struct LoadArgs {
     /// $LAPID_EXPERT_CACHE_GB).
     #[arg(long = "expert-cache", value_name = "GIB")]
     pub expert_cache: Option<f64>,
+    /// Activation steering file (`lapid steer FILE` describes one), applied to chat models:
+    /// FILE or FILE:SCALE (multiplies the file's scales; 0 = loaded but off). Repeatable.
+    /// Server requests choose with `"steer": {"name": scale}`.
+    #[arg(long = "steer", value_name = "FILE[:SCALE]")]
+    pub steer: Vec<String>,
 }
 
 impl LoadArgs {
-    pub fn options(&self, sampling: &SamplingArgs) -> LoadOptions {
-        LoadOptions { dtype: self.dtype.clone(), sessions: self.sessions, defaults: sampling.params() }
+    pub fn options(&self, sampling: &SamplingArgs) -> Result<LoadOptions> {
+        let steer = self.steer.iter().map(|s| SteerSpec::parse(s)).collect::<Result<_>>()?;
+        Ok(LoadOptions { dtype: self.dtype.clone(), sessions: self.sessions, defaults: sampling.params(), steer })
     }
 
     /// Apply process-wide settings (threads, weight residency) and print notes on ignored flags.
@@ -229,7 +237,7 @@ pub fn serve(a: ServeArgs) -> Result<()> {
         host: a.host,
         port: a.port,
         device: a.load.device.clone(),
-        load: a.load.options(&a.sampling),
+        load: a.load.options(&a.sampling)?,
     })
 }
 
@@ -260,7 +268,7 @@ pub fn run(a: RunArgs) -> Result<()> {
         inputs,
         interactive,
         device: a.load.device.clone(),
-        load: a.load.options(&a.sampling),
+        load: a.load.options(&a.sampling)?,
         system,
         sampling: a.sampling.params(),
         enable_thinking: a.think,
