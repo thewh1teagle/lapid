@@ -24,6 +24,7 @@ mod staged;
 use lapid::{DType, Device, Error, Result, Tensor};
 use lapid_nn::llm::engram::{EngramGate, Fp8Rows, NgramHash};
 use lapid_nn::llm::expert_cache::ExpertCache;
+use lapid_nn::llm::expert_stats::StatsLog;
 use lapid_nn::llm::hyper::{SinkhornHc, collapse, expand};
 use lapid_nn::{Embedding, Linear, Loader, RmsNorm};
 use serde_json::Value;
@@ -116,6 +117,8 @@ pub struct Deepseek41Model {
     device: Device,
     /// Held by a cached forward: one at a time uses the cache's slots.
     lock: std::sync::Mutex<()>,
+    /// `LAPID_EXPERT_CACHE_STATS` log of the cache.
+    stats: StatsLog,
     /// Prompt tokens per forward (larger with the cache: every chunk reads the union of its
     /// tokens' experts, nearly all of them, so fewer chunks read less).
     prefill_chunk: usize,

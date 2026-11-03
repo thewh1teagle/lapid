@@ -6,7 +6,7 @@
 //! a layer run, the model reads the router's choice to the host and calls
 //! [`ExpertCache::ensure`]: missing experts are read by the host from the mapping (page
 //! cache, else disk; all ranges in flight together) and copied into free or evicted slots
-//! with [`Device::write`]; the matmuls then run `MatMulId` on the pools with expert ids
+//! with [`Device::write`], after which their page-cache copy is released; the matmuls then run `MatMulId` on the pools with expert ids
 //! remapped to slot ids. The device never reads file-backed memory in place.
 //!
 //! Replacement: decayed access frequency over every `(layer, expert)` (also the ones not
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use lapid::{Device, Error, Op, Result, Tensor};
+use lapid::{Advice, Device, Error, Op, Result, Tensor};
 
 use super::expert_io::IoPool;
 use super::moe::{Experts, GateUp};
@@ -52,12 +52,44 @@ pub struct CacheStats {
     pub write_time: Duration,
     /// Passes run by [`ExpertCache::forward`] beyond one per call (union larger than the pool).
     pub extra_passes: u64,
+    /// Experts queued by [`ExpertCache::prefetch`] (not resident when queued).
+    pub prefetched: u64,
+    /// Misses that had been prefetched (the guess was right).
+    pub prefetch_used: u64,
 }
 
 impl CacheStats {
     pub fn hit_rate(&self) -> f64 {
         let n = self.hits + self.misses;
         if n == 0 { 0.0 } else { self.hits as f64 / n as f64 }
+    }
+
+    /// The counts added since `earlier` (a snapshot of the same cache).
+    pub fn since(&self, earlier: &CacheStats) -> CacheStats {
+        CacheStats {
+            hits: self.hits.saturating_sub(earlier.hits),
+            misses: self.misses.saturating_sub(earlier.misses),
+            loaded_bytes: self.loaded_bytes.saturating_sub(earlier.loaded_bytes),
+            read_time: self.read_time.saturating_sub(earlier.read_time),
+            write_time: self.write_time.saturating_sub(earlier.write_time),
+            extra_passes: self.extra_passes.saturating_sub(earlier.extra_passes),
+            prefetched: self.prefetched.saturating_sub(earlier.prefetched),
+            prefetch_used: self.prefetch_used.saturating_sub(earlier.prefetch_used),
+        }
+    }
+
+    /// Both counts added up.
+    pub fn plus(&self, other: &CacheStats) -> CacheStats {
+        CacheStats {
+            hits: self.hits + other.hits,
+            misses: self.misses + other.misses,
+            loaded_bytes: self.loaded_bytes + other.loaded_bytes,
+            read_time: self.read_time + other.read_time,
+            write_time: self.write_time + other.write_time,
+            extra_passes: self.extra_passes + other.extra_passes,
+            prefetched: self.prefetched + other.prefetched,
+            prefetch_used: self.prefetch_used + other.prefetch_used,
+        }
     }
 }
 
@@ -67,6 +99,9 @@ struct State {
     slot_of: Vec<u32>,
     /// Key held by each slot, or `NONE` (empty).
     owner: Vec<u32>,
+    /// Tick + 1 at which [`ExpertCache::prefetch`] last queued each key (0: never); a miss
+    /// within `protect` ticks of it counts as `prefetch_used`.
+    prefetched: Vec<u64>,
     /// Decayed access count per key (in units of the current `inc`).
     score: Vec<f32>,
     /// Weight of one access now; grows by `growth` per `ensure` (= exponential decay).
@@ -87,6 +122,7 @@ impl State {
     fn new(keys: usize, slots: usize, half_life: f64) -> State {
         State {
             slot_of: vec![NONE; keys],
+            prefetched: vec![0; keys],
             owner: vec![NONE; slots],
             score: vec![0.0; keys],
             inc: 1.0,
@@ -127,6 +163,10 @@ impl State {
                 self.used[s as usize] = tick;
             } else {
                 missing.push(i);
+                let p = std::mem::take(&mut self.prefetched[k as usize]);
+                if p > 0 && p + self.protect >= tick {
+                    self.stats.prefetch_used += 1;
+                }
             }
         }
         self.stats.hits += (keys.len() - missing.len()) as u64;
@@ -214,6 +254,8 @@ pub struct ExpertCache {
     slots: usize,
     state: Mutex<State>,
     io: IoPool,
+    /// Models should [`prefetch`](Self::prefetch) guesses (`LAPID_EXPERT_PREFETCH=0`: no).
+    speculative: bool,
 }
 
 /// Bytes of `t`'s host storage (a host leaf, e.g. a weight of an mmap'd file).
@@ -267,12 +309,19 @@ impl ExpertCache {
         let mut state = State::new(keys, slots, 256.0 * n_moe as f64);
         state.protect = n_moe as u64;
         let state = Mutex::new(state);
-        Ok(ExpertCache { device: device.clone(), kinds, experts, slots, state, io: IoPool::new() })
+        let speculative = std::env::var("LAPID_EXPERT_PREFETCH").map_or(true, |v| v.trim() != "0");
+        Ok(ExpertCache { device: device.clone(), kinds, experts, slots, state, io: IoPool::new(), speculative })
     }
 
     /// Experts the pools hold.
     pub fn slots(&self) -> usize {
         self.slots
+    }
+
+    /// Whether models should prefetch guesses of the next layer's experts (default; off with
+    /// `LAPID_EXPERT_PREFETCH=0`, e.g. to measure what they bring).
+    pub fn speculative(&self) -> bool {
+        self.speculative
     }
 
     /// Experts per layer.
@@ -374,6 +423,11 @@ impl ExpertCache {
             let src = self.source(k, key)?;
             let t = Instant::now();
             self.device.write(&self.kinds[k].pool, slot as usize * self.kinds[k].bytes, src)?;
+            // The pool holds it now (`write` returns once the bytes are staged): free its
+            // page-cache copy rather than have the kernel reclaim memory under pressure for
+            // the next reads (a prompt streams every expert of every layer).
+            let (h, r) = &ranges[i];
+            lapid::residency::advise_host(h, Some(r.clone()), Advice::Release)?;
             write += t.elapsed();
             bytes += src.len() as u64;
             Ok(())
@@ -381,42 +435,37 @@ impl ExpertCache {
         Ok((t0.elapsed().saturating_sub(write), write, bytes))
     }
 
-    /// Start reading `experts` of `layer` (all of them: `None`) that are not resident into
-    /// memory in the background, e.g. the next layer's during a long prefill chunk, whose
-    /// tokens route to nearly every expert: the disk reads overlap the device's work. Reads
-    /// at most what the page cache can hold besides a margin. Returns the bytes requested.
-    pub fn prefetch(&self, layer: usize, experts: Option<&[u32]>) -> u64 {
-        let all: Vec<u32>;
-        let experts = match experts {
-            Some(e) => e,
-            None => {
-                all = (0..self.experts as u32).collect();
-                &all
-            }
-        };
+    /// Start reading `experts` of `layer` that are not resident into memory in the
+    /// background, e.g. a guess of the next layer's experts while the device works on this
+    /// one. Replaces the queued reads of earlier calls (stale guesses) and queues behind the
+    /// reads [`ensure`](Self::ensure) waits for; reads at most what the page cache can hold
+    /// besides a margin. Returns the experts queued.
+    pub fn prefetch(&self, layer: usize, experts: &[u32]) -> usize {
+        self.io.cancel_background();
         let room = lapid::residency::available_memory().map_or(0, |a| a.saturating_sub(MIN_FREE) / 2);
         let mut ranges = Vec::new();
-        let mut bytes = 0u64;
-        {
-            let st = self.lock();
-            for &e in experts {
-                let Ok(key) = self.key(layer, e) else { continue };
-                if st.slot_of[key as usize] != NONE {
-                    continue;
-                }
-                if bytes + self.slot_bytes() as u64 > room {
-                    break;
-                }
-                for (k, kind) in self.kinds.iter().enumerate() {
-                    if let Some(Op::Host(h)) = kind.layers[layer].as_ref().map(Tensor::op) {
-                        ranges.push((h.clone(), self.range(k, e as usize)));
-                    }
-                }
-                bytes += self.slot_bytes() as u64;
+        let mut queued = 0usize;
+        let mut st = self.lock();
+        for &e in experts {
+            let Ok(key) = self.key(layer, e) else { continue };
+            if st.slot_of[key as usize] != NONE {
+                continue;
             }
+            if (queued + 1) as u64 * self.slot_bytes() as u64 > room {
+                break;
+            }
+            for (k, kind) in self.kinds.iter().enumerate() {
+                if let Some(Op::Host(h)) = kind.layers[layer].as_ref().map(Tensor::op) {
+                    ranges.push((h.clone(), self.range(k, e as usize)));
+                }
+            }
+            st.prefetched[key as usize] = st.tick + 1;
+            queued += 1;
         }
+        st.stats.prefetched += queued as u64;
+        drop(st);
         self.io.populate_background(ranges);
-        bytes
+        queued
     }
 
     /// Routed SwiGLU-style experts through the cache (kinds `[gate, up, down]`): like

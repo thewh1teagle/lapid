@@ -226,6 +226,7 @@ pub(super) fn model(l: &Loader<'_>, meta: &Value) -> Result<Deepseek41Model> {
         device: l.device.clone(),
         lock: std::sync::Mutex::new(()),
         prefill_chunk,
+        stats: lapid_nn::llm::expert_stats::StatsLog::from_env(),
         hash,
         layers,
         cfg,

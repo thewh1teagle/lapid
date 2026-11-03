@@ -1,7 +1,7 @@
 //! Loading `.lapid` files as tensors. CONTRACT signatures — implementation by agent "runtime".
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use lapid_format::{Bytes, Reader};
@@ -46,6 +46,8 @@ struct Image {
     start: usize,
     end: usize,
     data: WeakImage,
+    /// A read-only file mapping (else caller memory).
+    mapped: bool,
     /// `Auto` chose to stream this file (decided at open).
     streams: bool,
     /// Per-file policy ([`LapidFile::set_residency`]); wins over the process-wide one.
@@ -53,6 +55,10 @@ struct Image {
 }
 
 static FILE_RANGES: Mutex<Vec<Image>> = Mutex::new(Vec::new());
+
+/// Files whose streaming notice was printed (once per path and process: callers often open
+/// a file for its metadata before loading it).
+static STREAM_NOTICES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Register a file image; returns the `Auto` decision for it. Only real file mappings
 /// (`mapped`) may stream: caller memory is resident anyway.
@@ -65,7 +71,7 @@ fn register_image(data: &Bytes, weights: u64, mapped: bool) -> bool {
         let resident: u64 = ranges.iter().filter(|i| !i.streams).map(|i| (i.end - i.start) as u64).sum();
         residency::auto_streams(weights, resident)
     };
-    ranges.push(Image { start, end: start + bytes.len(), data: Arc::downgrade(data), streams, forced: None });
+    ranges.push(Image { start, end: start + bytes.len(), data: Arc::downgrade(data), mapped, streams, forced: None });
     streams
 }
 
@@ -80,6 +86,13 @@ pub(crate) fn weight_residency(key: (usize, usize)) -> Option<Residency> {
     Some(effective(forced, streams))
 }
 
+/// Whether `bytes` lie inside the read-only mapping of a live .lapid file (dropping their
+/// pages from this process's page tables then never changes what they read).
+pub(crate) fn in_file_mapping(bytes: &[u8]) -> bool {
+    let (ptr, len) = (bytes.as_ptr() as usize, bytes.len());
+    lock(&FILE_RANGES).iter().any(|i| i.mapped && ptr >= i.start && ptr.saturating_add(len) <= i.end && i.data.strong_count() > 0)
+}
+
 /// `Upload` or `Mmap` for a file with this override and `Auto` decision.
 fn effective(forced: Option<Residency>, streams: bool) -> Residency {
     match forced.unwrap_or_else(residency::residency) {
@@ -87,6 +100,17 @@ fn effective(forced: Option<Residency>, streams: bool) -> Residency {
         Residency::Auto => Residency::Upload,
         r => r,
     }
+}
+
+/// True the first time `path` is seen (see [`STREAM_NOTICES`]).
+fn first_notice(path: &Path) -> bool {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut seen = lock(&STREAM_NOTICES);
+    if seen.contains(&path) {
+        return false;
+    }
+    seen.push(path);
+    true
 }
 
 impl LapidFile {
@@ -101,7 +125,7 @@ impl LapidFile {
             // locking the pages around GPU evals gets far cheaper.
             f.advise(Advice::HugePage);
         }
-        if f.streams {
+        if f.streams && first_notice(path) {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             crate::log::emit(&format!(
                 "[lapid] {}: {:.1} GiB of weights, {:.1} GiB available: weights do not fit, reading them from the file on demand (mmap)",

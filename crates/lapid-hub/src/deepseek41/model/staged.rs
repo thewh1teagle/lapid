@@ -12,8 +12,11 @@
 //! taps) is realized at each cut, so no graph is ever evaluated twice and no graph reads
 //! slots after they are rewritten. One forward at a time (the slots are shared).
 
+use std::time::{Duration, Instant};
+
 use lapid::{DType, Device, Error, Op, Result, Tensor};
 use lapid_nn::llm::expert_cache::ExpertCache;
+use lapid_nn::llm::expert_stats::ForwardTimes;
 use lapid_nn::llm::hyper::{collapse, expand};
 
 use super::attention::Shared;
@@ -37,6 +40,12 @@ fn realize(device: &Device, ts: Vec<&mut Tensor>) -> Result<()> {
     Ok(())
 }
 
+/// The distinct non-negative ids of `ids`, in first-seen order.
+fn distinct(ids: &[i32]) -> Vec<u32> {
+    let mut seen = std::collections::HashSet::new();
+    ids.iter().filter_map(|&e| u32::try_from(e).ok()).filter(|&e| seen.insert(e)).collect()
+}
+
 /// The MoE of a layer whose router ran: its input, host expert ids, weights and the mHC
 /// mixes that take its output.
 struct Pending {
@@ -51,6 +60,8 @@ struct Pending {
 impl Deepseek41Model {
     pub(super) fn forward_cached(&self, cache: &ExpertCache, ids: &[u32], st: &mut State, rows: Rows, taps: &mut Taps) -> Result<Option<Tensor>> {
         let _one = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (t0, before) = (Instant::now(), cache.stats());
+        let mut eval = Duration::ZERO;
         let dev = &self.device;
         let (n, d, hc) = (ids.len(), self.cfg.hidden_size, self.cfg.hc_mult);
         let pos = st.pos;
@@ -73,17 +84,12 @@ impl Deepseek41Model {
             let m = self.layers[p.layer].moe.forward_cached(cache, &p.x, ids, &p.w)?;
             expand(&m, x, &p.post, &p.comb)
         };
-        // A chunk whose tokens pick nearly every expert: read the next layer's experts while
-        // the device works on this one.
-        let prefetch = n * self.cfg.top_k >= 4 * self.cfg.n_experts;
+        let speculate = cache.speculative();
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some((p, host_ids)) = pending.take() {
                 let li = p.layer;
                 x = finish(p, &host_ids, &x)?;
                 tap(&mut pend_taps, format!("layers.{li}"), &x.reshape(&[n, hc * d])?);
-            }
-            if prefetch {
-                cache.prefetch(i, None);
             }
             if let Some(eg) = &layer.engram {
                 x = self.engram(eg, &x, ids, &st.history)?;
@@ -98,8 +104,16 @@ impl Deepseek41Model {
             tap(&mut pend_taps, format!("layers.{i}.op"), &a);
             x = expand(&a, &x, &am.post, &am.comb)?;
             let fm = layer.ffn_hc.mix(&x)?;
-            let xn = layer.ffn_norm.forward(&collapse(&am.pre, &x)?)?.cast(DType::F32)?;
+            let c = collapse(&am.pre, &x)?;
+            let xn = layer.ffn_norm.forward(&c)?.cast(DType::F32)?;
             let (route_ids, w) = layer.moe.route(&xn)?;
+            // Guess of the next layer's experts: its router on this layer's FFN input (the
+            // streams change little per layer), read in the background while this layer's
+            // experts load and the device runs.
+            let mut guess = match self.layers.get(i + 1) {
+                Some(nl) if speculate => Some(nl.moe.route(&nl.ffn_norm.forward(&c)?.cast(DType::F32)?)?.0),
+                _ => None,
+            };
             let mut p = Pending { layer: i, x: xn, ids: route_ids, w, post: fm.post, comb: fm.comb };
             let mut fm_pre = fm.pre;
             {
@@ -109,13 +123,22 @@ impl Deepseek41Model {
                 }
                 cut.extend(shared.tensors_mut());
                 cut.extend(pend_taps.iter_mut().map(|(_, t)| t));
+                cut.extend(guess.as_mut());
+                let t = Instant::now();
                 realize(dev, cut)?;
+                eval += t.elapsed();
             }
             for (name, t) in pend_taps.drain(..) {
                 taps.tap(name, &t);
             }
             pre = Some(fm_pre);
+            let t = Instant::now();
             let host_ids = dev.to_vec_i32(&p.ids)?;
+            let guess = guess.map(|g| dev.to_vec_i32(&g)).transpose()?;
+            eval += t.elapsed();
+            if let Some(g) = guess {
+                cache.prefetch(i + 1, &distinct(&g));
+            }
             pending = Some((p, host_ids));
         }
         let pre = pre.ok_or_else(|| Error::new("internal", "deepseek41: no layers"))?;
@@ -137,13 +160,16 @@ impl Deepseek41Model {
             let mut out = if rows == Rows::None { None } else { Some(self.head.forward(&h)?) };
             let mut cut: Vec<&mut Tensor> = out.iter_mut().collect();
             cut.extend(pend_taps.iter_mut().map(|(_, t)| t));
+            let t = Instant::now();
             realize(dev, cut)?;
+            eval += t.elapsed();
             for (name, t) in pend_taps.drain(..) {
                 taps.tap(name, &t);
             }
             logits = out;
         }
         stage(st, next, ids, self.hash.as_ref());
+        self.stats.record(cache, n, before, ForwardTimes { wall: t0.elapsed(), eval });
         Ok(logits)
     }
 }

@@ -175,6 +175,13 @@ pub enum Advice {
     /// `MADV_POPULATE_READ`; elsewhere `WillNeed`). Later reads, including a GPU's through
     /// the host page tables, then take no page faults.
     Populate,
+    /// Done with it for now: unmap its pages from this process (`MADV_DONTNEED`); they stay
+    /// in the page cache as clean unmapped pages, which the kernel reclaims cheaply (no
+    /// reverse-map walk or TLB shootdown) when more is read under memory pressure. For data
+    /// copied elsewhere, e.g. experts copied into a device cache. Only applied to bytes of a
+    /// live read-only .lapid file mapping (a no-op elsewhere: it would discard anonymous
+    /// memory) and only on Linux.
+    Release,
 }
 
 /// Page-cache hint for bytes `range` (relative to the tensor's data; `None` = all of it)
@@ -353,6 +360,9 @@ pub fn advise_host(h: &HostData, range: Option<Range<usize>>, advice: Advice) ->
     let Some(sub) = bytes.get(r.clone()) else {
         return Err(Error::new("invalid_argument", format!("advise: range {r:?} outside {} bytes", bytes.len())));
     };
+    if advice == Advice::Release && !crate::file::in_file_mapping(sub) {
+        return Ok(());
+    }
     sys::advise(sub, advice);
     Ok(())
 }
@@ -417,10 +427,14 @@ mod sys {
             Advice::Populate => 3,
             Advice::HugePage if cfg!(target_os = "linux") => 14,
             Advice::HugePage => return,
+            // Callers checked it is a read-only shared file mapping (`advise_host`).
+            Advice::Release if cfg!(target_os = "linux") => 4,
+            Advice::Release => return,
         };
         let (lo, len) = pages(bytes);
         // SAFETY: advisory only; the range covers pages of a live allocation (`bytes`), and
-        // none of these advices changes the contents of memory.
+        // none of these advices changes the contents of memory (`Release` unmaps pages of a
+        // read-only shared file mapping only, which refault with the same bytes).
         let r = unsafe { madvise(lo as *mut c_void, len, a) };
         if r != 0 && advice == Advice::Populate {
             // Older kernel (EINVAL): at least start the reads.
