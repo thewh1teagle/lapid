@@ -108,6 +108,11 @@ pub struct LoadArgs {
     /// Always copy weights to the device (the default when the model fits).
     #[arg(long = "no-mmap", overrides_with = "mmap")]
     pub no_mmap: bool,
+    /// Device memory (GiB) for MoE experts that do not fit in memory, streamed from the
+    /// model file on demand (default: what is available minus a safety headroom;
+    /// $LAPID_EXPERT_CACHE_GB).
+    #[arg(long = "expert-cache", value_name = "GIB")]
+    pub expert_cache: Option<f64>,
 }
 
 impl LoadArgs {
@@ -121,6 +126,9 @@ impl LoadArgs {
             lapid::set_residency(lapid::Residency::Mmap);
         } else if self.no_mmap {
             lapid::set_residency(lapid::Residency::Upload);
+        }
+        if let Some(g) = self.expert_cache {
+            lapid_nn::llm::expert_cache::set_budget_gib(g);
         }
         if let Some(t) = self.threads {
             // SAFETY: called at startup, before any other thread is spawned.

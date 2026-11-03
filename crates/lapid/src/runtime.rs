@@ -494,7 +494,7 @@ fn expected_bytes(t: &Tensor) -> Result<usize> {
 
 fn storage_bytes(shape: &[usize], dt: DType) -> Result<usize> {
     let block = dt.quant_format().map_or(DType::QUANT_GROUP, |f| f.block_elems());
-    if dt.is_quant() && (!(2..=3).contains(&shape.len()) || shape[shape.len() - 1] % block != 0) {
+    if dt.is_quant() && (!(2..=3).contains(&shape.len()) || !shape[shape.len() - 1].is_multiple_of(block)) {
         bail!("shape_mismatch", "quantized {} tensor has invalid shape {:?}", dt.name(), shape);
     }
     Ok(dt.storage_bytes(shape))

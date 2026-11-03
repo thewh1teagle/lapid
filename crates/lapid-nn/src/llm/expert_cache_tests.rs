@@ -72,7 +72,7 @@ fn cached_forward_matches_direct() {
                 let ks = ks.as_ref().expect("layer");
                 let direct = Experts { gate_up: GateUp::Split { gate: ks[0].clone(), up: ks[1].clone() }, down: ks[2].clone(), act: Activation::Silu, limit: Some(1.5), act_quant: false };
                 let want = eval(&direct.forward(&t(&x, &[n, d]), &Tensor::from_i32(&ids, &[n, k]).expect("ids"), &t(&w, &[n, k])).expect("direct"));
-                let got = cache.forward(l, Activation::Silu, Some(1.5), false, &t(&x, &[n, d]), &ids, &t(&w, &[n, k])).expect("cached");
+                let got = cache.forward(l, Glu { act: Activation::Silu, limit: Some(1.5), act_quant: false }, &t(&x, &[n, d]), &ids, &t(&w, &[n, k])).expect("cached");
                 assert_close(&eval(&got), &want, 1e-5);
             }
         }
@@ -109,4 +109,108 @@ fn budget_override_is_capped() {
         assert!(b <= a.saturating_sub(MIN_FREE) + (1 << 30), "{why}");
     }
     set_budget_gib(0.0);
+}
+
+/// Hit rates of the replacement policy for DeepSeek V4.1 Flash decode (40 layers x 384
+/// experts, top 6) on synthetic routing traces, per pool size and count half-life (in
+/// tokens; ~0 behaves like LRU). Ignored (prints a table):
+/// `cargo test --release -p lapid-nn policy_hit_rates -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn policy_hit_rates() {
+    let (layers, e, k, tokens) = (40usize, 384usize, 6usize, 1600usize);
+    let mut rng = 0x1234_5678_9abc_def0u64;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f64 / (1u64 << 53) as f64
+    };
+    // trace: (name, zipf alpha, reuse probability of the previous token's experts, drift period)
+    let traces: [(&str, f64, f64, usize); 5] = [
+        ("uniform", 0.0, 0.0, 0),
+        ("zipf 0.6", 0.6, 0.0, 0),
+        ("zipf 1.0", 1.0, 0.0, 0),
+        ("zipf 0.8 + reuse 0.3", 0.8, 0.3, 0),
+        ("zipf 0.8 + reuse 0.3, drift/500", 0.8, 0.3, 500),
+    ];
+    let variants: [(f64, u64); 6] = [(0.05, 0), (8.0, 0), (64.0, 0), (512.0, 0), (64.0, 1), (512.0, 1)];
+    println!("{:<34} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}", "trace", "pool", "hl=0.05", "hl=8", "hl=64", "hl=512", "64+rec", "512+rec", "static*");
+    for (name, alpha, reuse, drift) in traces {
+        // per layer: expert weights over a random order
+        let mut weights: Vec<Vec<f64>> = (0..layers)
+            .map(|_| {
+                let mut order: Vec<usize> = (0..e).collect();
+                for i in (1..e).rev() {
+                    order.swap(i, (next() * (i + 1) as f64) as usize);
+                }
+                let mut w = vec![0.0; e];
+                for (rank, &x) in order.iter().enumerate() {
+                    w[x] = 1.0 / (1.0 + rank as f64).powf(alpha);
+                }
+                w
+            })
+            .collect();
+        let mut trace: Vec<Vec<u32>> = Vec::with_capacity(tokens * layers);
+        let mut prev: Vec<Vec<u32>> = vec![Vec::new(); layers];
+        for t in 0..tokens {
+            if drift > 0 && t > 0 && t % drift == 0 {
+                for w in &mut weights {
+                    // reshuffle a third of the experts' weights
+                    for _ in 0..e / 3 {
+                        let (a, b) = ((next() * e as f64) as usize, (next() * e as f64) as usize);
+                        w.swap(a, b);
+                    }
+                }
+            }
+            for l in 0..layers {
+                let mut pick: Vec<u32> = Vec::with_capacity(k);
+                for &p in &prev[l] {
+                    if pick.len() < k && next() < reuse {
+                        pick.push(p);
+                    }
+                }
+                let total: f64 = weights[l].iter().sum();
+                while pick.len() < k {
+                    let mut r = next() * total;
+                    let mut x = 0;
+                    while x + 1 < e && r >= weights[l][x] {
+                        r -= weights[l][x];
+                        x += 1;
+                    }
+                    if !pick.contains(&(x as u32)) {
+                        pick.push(x as u32);
+                    }
+                }
+                prev[l] = pick.clone();
+                trace.push(pick.iter().map(|&x| (l * e) as u32 + x).collect());
+            }
+        }
+        for frac in [0.2, 0.28, 0.35] {
+            let slots = (frac * (layers * e) as f64) as usize;
+            let mut row = format!("{name:<34} {:>5.0}%", frac * 100.0);
+            for (hl, protect) in variants {
+                let mut st = State::new(layers * e, slots, hl * layers as f64);
+                st.protect = protect * layers as u64;
+                let warm = trace.len() / 4;
+                let mut hits = 0u64;
+                let mut total = 0u64;
+                for (i, keys) in trace.iter().enumerate() {
+                    st.touch(keys);
+                    let before = st.stats.hits;
+                    st.assign(keys);
+                    if i >= warm {
+                        hits += st.stats.hits - before;
+                        total += keys.len() as u64;
+                    }
+                }
+                row.push_str(&format!(" {:>8.3}", hits as f64 / total as f64));
+            }
+            // static: top `slots` experts by true weight (k-sampling approximated by mass)
+            let mut all: Vec<f64> = weights.iter().flat_map(|w| { let s: f64 = w.iter().sum(); w.iter().map(move |x| x / s / layers as f64) }).collect();
+            all.sort_by(|a, b| b.total_cmp(a));
+            row.push_str(&format!(" {:>8.3}", all[..slots].iter().sum::<f64>()));
+            println!("{row}");
+        }
+    }
 }

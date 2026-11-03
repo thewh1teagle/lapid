@@ -10,7 +10,7 @@
 //! V4.1 has no hash-routed layers; the vision routing bias (`bias_vl`) is not used.
 
 use lapid::{BinaryOp, DType, Result, Tensor};
-use lapid_nn::llm::expert_cache::ExpertCache;
+use lapid_nn::llm::expert_cache::{ExpertCache, Glu};
 use lapid_nn::llm::moe::Experts;
 use lapid_nn::llm::softplus;
 use lapid_nn::{Activation, Linear};
@@ -80,7 +80,7 @@ impl Moe {
         let Routed::Cached { layer, act_quant } = self.routed else {
             return Err(lapid::Error::new("internal", "deepseek41: graph-leaf experts in a cached forward"));
         };
-        let routed = cache.forward(layer, Activation::Silu, self.limit, act_quant, x, ids, w)?;
+        let routed = cache.forward(layer, Glu { act: Activation::Silu, limit: self.limit, act_quant }, x, ids, w)?;
         routed.add(&self.shared(x)?)?.cast(DType::F32)
     }
 }

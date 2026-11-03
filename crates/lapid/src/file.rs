@@ -256,6 +256,10 @@ mod tests {
         bytes
     }
 
+    pub(super) fn sample_image_pub(tag: &str) -> Vec<u8> {
+        sample_image(tag)
+    }
+
     #[test]
     fn from_bytes_runs_on_cpu_zero_copy() {
         let image: Bytes = Arc::new(sample_image("bytes"));
@@ -277,5 +281,36 @@ mod tests {
         let f = LapidFile::from_static(image).expect("from_static");
         assert_eq!(f.get("x").expect("x").shape(), &[2, 3]);
         assert!(LapidFile::from_bytes(Arc::new(vec![1u8; 8])).is_err());
+    }
+}
+
+#[cfg(test)]
+mod residency_tests {
+    use super::*;
+
+    #[test]
+    fn per_file_residency_and_device_write() {
+        let image: Bytes = Arc::new(super::tests::sample_image_pub("res"));
+        let f = LapidFile::from_bytes(image).expect("from_bytes");
+        let key = |f: &LapidFile| {
+            let b = f.bytes("x").expect("x");
+            (b.as_ptr() as usize, b.len())
+        };
+        f.set_residency(Residency::Mmap);
+        assert_eq!(f.residency(), Residency::Mmap);
+        assert_eq!(weight_residency(key(&f)), Some(Residency::Mmap));
+        f.set_residency(Residency::Upload);
+        assert_eq!(weight_residency(key(&f)), Some(Residency::Upload));
+        f.set_residency(Residency::Auto);
+        assert_eq!(f.residency(), effective(None, false));
+
+        let dev = crate::Device::cpu();
+        let t = dev.alloc(&[2, 3], lapid_tensor::DType::F32).expect("alloc");
+        let vals: Vec<f32> = (0..6).map(|i| i as f32).collect();
+        dev.write(&t, 0, bytemuck::cast_slice(&vals)).expect("write");
+        dev.write(&t, 4, &7f32.to_le_bytes()).expect("write one");
+        assert_eq!(dev.to_vec_f32(&t).expect("read"), vec![0.0, 7.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(dev.write(&t, 21, &[0u8; 4]).is_err());
+        assert!(dev.write(&f.get("x").expect("x"), 0, &[0u8; 4]).is_err());
     }
 }

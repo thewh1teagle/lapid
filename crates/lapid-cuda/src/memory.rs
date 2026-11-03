@@ -215,6 +215,8 @@ pub(crate) struct Staging {
     half: usize,
     events: [CUevent; 2],
     pending: [bool; 2],
+    /// Half the next chunk goes to (alternates across calls, so back-to-back uploads overlap).
+    next: usize,
 }
 
 // SAFETY: the pinned host pointer and events are only used by the owner (behind the
@@ -222,7 +224,32 @@ pub(crate) struct Staging {
 unsafe impl Send for Staging {}
 
 /// Bytes per staging half.
-const STAGING_HALF: usize = 4 << 20;
+const STAGING_HALF: usize = 16 << 20;
+
+/// Host threads of one large staging copy (one memcpy stream reaches ~20 GB/s).
+const COPY_THREADS: usize = 4;
+
+/// `src` to `dst` (`src.len()` writable bytes), split over threads when large.
+///
+/// # Safety
+/// `dst` is valid for `src.len()` bytes and does not overlap `src`.
+unsafe fn copy_parallel(src: &[u8], dst: *mut u8) {
+    let part = src.len().div_ceil(COPY_THREADS).next_multiple_of(4096);
+    if src.len() < (2 << 20) || part >= src.len() {
+        // SAFETY: caller contract.
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()) };
+        return;
+    }
+    let dst = dst as usize;
+    std::thread::scope(|s| {
+        for (i, c) in src.chunks(part).enumerate() {
+            s.spawn(move || {
+                // SAFETY: disjoint sub-ranges of the caller's valid destination.
+                unsafe { std::ptr::copy_nonoverlapping(c.as_ptr(), (dst + i * part) as *mut u8, c.len()) };
+            });
+        }
+    });
+}
 
 impl Staging {
     pub fn new(drv: &Driver) -> Result<Staging> {
@@ -249,6 +276,7 @@ impl Staging {
             half: STAGING_HALF,
             events,
             pending: [false; 2],
+            next: 0,
         })
     }
 
@@ -273,21 +301,25 @@ impl Staging {
         Ok(())
     }
 
-    /// Copy `src` to device address `dst` through the staging halves; waits for the end.
+    /// Copy `src` to device address `dst` through the staging halves. With `wait`, returns
+    /// when the copy is complete; else when `src` is in staging memory (the device side
+    /// completes in stream order, before any later launch or copy on `stream`).
     pub fn upload(
         &mut self,
         drv: &Driver,
         stream: CUstream,
         dst: CUdeviceptr,
         src: &[u8],
+        wait: bool,
     ) -> Result<()> {
         for (i, chunk) in src.chunks(self.half).enumerate() {
-            let slot = i % 2;
+            let slot = self.next;
+            self.next ^= 1;
             self.wait(drv, slot)?;
             // SAFETY: the slot is idle (its last copy completed) and has `half` bytes.
             unsafe {
                 let h = self.host.add(slot * self.half);
-                std::ptr::copy_nonoverlapping(chunk.as_ptr(), h, chunk.len());
+                copy_parallel(chunk, h);
                 let d = dst + (i * self.half) as u64;
                 drv.check(
                     "cuMemcpyHtoDAsync",
@@ -300,8 +332,11 @@ impl Staging {
             }
             self.pending[slot] = true;
         }
-        self.wait(drv, 0)?;
-        self.wait(drv, 1)
+        if wait {
+            self.wait(drv, 0)?;
+            self.wait(drv, 1)?;
+        }
+        Ok(())
     }
 
     /// Copy `out.len()` bytes from device address `src` into `out`; waits for the end.

@@ -22,6 +22,7 @@
 pub mod delta_net;
 pub mod engram;
 pub mod expert_cache;
+mod expert_io;
 pub mod gated_attention;
 pub mod head;
 pub mod hyper;

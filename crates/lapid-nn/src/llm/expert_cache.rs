@@ -10,9 +10,12 @@
 //! remapped to slot ids. The device never reads file-backed memory in place.
 //!
 //! Replacement: decayed access frequency over every `(layer, expert)` (also the ones not
-//! resident), ties broken by recency; the slots the current pass needs are pinned. A
-//! one-off expert thus replaces the previous one-off instead of a popular one, and the
-//! steady state keeps each layer's most used experts.
+//! resident; half-life ~256 tokens), ties broken by recency, with the experts of the last
+//! token evicted only after all others; the slots the current pass needs are pinned. A
+//! one-off expert thus replaces the previous one-off instead of a popular one, the steady
+//! state keeps each layer's most used experts, and experts reused by consecutive tokens stay
+//! (see the `policy_hit_rates` simulation: within 1-3% of the best static choice on
+//! stationary Zipf routing, above it when consecutive tokens share experts).
 //!
 //! A pass needs at most `S` distinct experts: [`ExpertCache::forward`] splits a larger
 //! union (long prefill chunks, tiny pools) into passes, evaluating all but the last.
@@ -27,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use lapid::{Device, Error, Op, Result, Tensor};
 
+use super::expert_io::IoPool;
 use super::moe::{Experts, GateUp};
 use crate::mlp::Activation;
 
@@ -41,9 +45,10 @@ pub struct CacheStats {
     pub misses: u64,
     /// Bytes copied into the pools.
     pub loaded_bytes: u64,
-    /// Time spent reading misses into memory (page cache / disk).
+    /// Time spent waiting for misses to be read into memory (page cache / disk), beyond
+    /// what overlapped with copying earlier ones.
     pub read_time: Duration,
-    /// Time spent copying them to the device.
+    /// Time spent copying them to the device (host side).
     pub write_time: Duration,
     /// Passes run by [`ExpertCache::forward`] beyond one per call (union larger than the pool).
     pub extra_passes: u64,
@@ -72,6 +77,9 @@ struct State {
     /// Slots pinned for the current pass: `pinned[s] == tick`.
     pinned: Vec<u64>,
     tick: u64,
+    /// Slots used within this many ticks are evicted only after all others (recency
+    /// protection on top of frequency: experts reused by the next token stay).
+    protect: u64,
     stats: CacheStats,
 }
 
@@ -86,6 +94,7 @@ impl State {
             used: vec![0; slots],
             pinned: vec![0; slots],
             tick: 0,
+            protect: 0,
             stats: CacheStats::default(),
         }
     }
@@ -125,21 +134,8 @@ impl State {
         if missing.is_empty() {
             return (out, Vec::new());
         }
-        // Victims: (empty first, score, last use, slot) smallest.
-        let mut cand: Vec<(bool, f32, u64, u32)> = (0..self.owner.len())
-            .filter(|&s| self.pinned[s] != tick)
-            .map(|s| {
-                let o = self.owner[s];
-                let score = if o == NONE { 0.0 } else { self.score[o as usize] };
-                (o != NONE, score, self.used[s], s as u32)
-            })
-            .collect();
         let need = missing.len();
-        let cmp = |a: &(bool, f32, u64, u32), b: &(bool, f32, u64, u32)| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2));
-        if cand.len() > need {
-            cand.select_nth_unstable_by(need - 1, cmp);
-            cand.truncate(need);
-        }
+        let cand = self.victims(need);
         let mut loads = Vec::with_capacity(need);
         for (i, c) in missing.into_iter().zip(cand) {
             let (k, s) = (keys[i], c.3);
@@ -155,6 +151,41 @@ impl State {
             loads.push((k, s));
         }
         (out, loads)
+    }
+
+    /// The `need` unpinned slots to evict: empty ones first, then the lowest score, then the
+    /// least recently used. One pass over the slots.
+    fn victims(&self, need: usize) -> Vec<(u8, f32, u64, u32)> {
+        type Cand = (u8, f32, u64, u32);
+        let tick = self.tick;
+        let key = |s: usize| -> Cand {
+            let o = self.owner[s];
+            let score = if o == NONE { 0.0 } else { self.score[o as usize] };
+            let class = if o == NONE { 0 } else if self.used[s] + self.protect >= tick { 2 } else { 1 };
+            (class, score, self.used[s], s as u32)
+        };
+        let less = |a: &Cand, b: &Cand| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)).is_lt();
+        let free = (0..self.owner.len()).filter(move |&s| self.pinned[s] != tick);
+        if need <= 16 {
+            // Small sorted buffer (decode: a few misses per layer), no allocation per slot.
+            let mut best: Vec<Cand> = Vec::with_capacity(need + 1);
+            for s in free {
+                let c = key(s);
+                if best.len() == need && !less(&c, &best[need - 1]) {
+                    continue;
+                }
+                let at = best.iter().position(|b| less(&c, b)).unwrap_or(best.len());
+                best.insert(at, c);
+                best.truncate(need);
+            }
+            return best;
+        }
+        let mut cand: Vec<Cand> = free.map(key).collect();
+        if cand.len() > need {
+            cand.select_nth_unstable_by(need - 1, |a, b| if less(a, b) { std::cmp::Ordering::Less } else if less(b, a) { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal });
+            cand.truncate(need);
+        }
+        cand
     }
 
     /// Forget the slots of `loads` (their copy failed: contents unknown).
@@ -182,6 +213,7 @@ pub struct ExpertCache {
     experts: usize,
     slots: usize,
     state: Mutex<State>,
+    io: IoPool,
 }
 
 /// Bytes of `t`'s host storage (a host leaf, e.g. a weight of an mmap'd file).
@@ -230,9 +262,12 @@ impl ExpertCache {
         }
         let keys = layers.len() * experts;
         let n_moe = layers.iter().flatten().count().max(1);
-        // Half-life of the access counts: ~64 tokens' worth of lookups.
-        let state = Mutex::new(State::new(keys, slots, 64.0 * n_moe as f64));
-        Ok(ExpertCache { device: device.clone(), kinds, experts, slots, state })
+        // Access counts decay with a half-life of ~256 tokens (one lookup per MoE layer and
+        // token); the experts of the last token are evicted last (`policy_hit_rates`).
+        let mut state = State::new(keys, slots, 256.0 * n_moe as f64);
+        state.protect = n_moe as u64;
+        let state = Mutex::new(state);
+        Ok(ExpertCache { device: device.clone(), kinds, experts, slots, state, io: IoPool::new() })
     }
 
     /// Experts the pools hold.
@@ -316,49 +351,72 @@ impl ExpertCache {
         }
     }
 
-    /// Read the sources of `loads` into memory (all in flight together), then copy them
-    /// into their slots. Returns (read time, write time, bytes).
+    /// Read the sources of `loads` into memory (all in flight together) and copy each to
+    /// its slot as soon as it is in. Returns (time waiting for reads, copy time, bytes).
     fn load(&self, loads: &[(u32, u32)]) -> Result<(Duration, Duration, u64)> {
         let t0 = Instant::now();
-        let mut ranges = Vec::with_capacity(loads.len() * self.kinds.len());
-        for &(key, _) in loads {
-            for k in 0..self.kinds.len() {
-                let (l, e) = (key as usize / self.experts, key as usize % self.experts);
-                if let Some(t) = &self.kinds[k].layers[l] {
-                    ranges.push((t, self.range(k, e)));
-                }
-            }
-        }
-        let refs: Vec<(&Tensor, Range<usize>)> = ranges.iter().map(|(t, r)| (*t, r.clone())).collect();
-        lapid::populate_all(&refs)?;
-        let read = t0.elapsed();
-        let t1 = Instant::now();
-        let mut bytes = 0u64;
+        let mut items = Vec::with_capacity(loads.len() * self.kinds.len());
+        let mut ranges = Vec::with_capacity(items.capacity());
         for &(key, slot) in loads {
+            let (l, e) = (key as usize / self.experts, key as usize % self.experts);
             for (k, kind) in self.kinds.iter().enumerate() {
-                let src = self.source(k, key)?;
-                self.device.write(&kind.pool, slot as usize * kind.bytes, src)?;
-                bytes += src.len() as u64;
+                let Some(Op::Host(h)) = kind.layers[l].as_ref().map(Tensor::op) else {
+                    return Err(Error::new("internal", "expert cache: source is not host data"));
+                };
+                items.push((k, key, slot));
+                ranges.push((h.clone(), self.range(k, e)));
             }
         }
-        Ok((read, t1.elapsed(), bytes))
+        let mut write = Duration::ZERO;
+        let mut bytes = 0u64;
+        self.io.read_in_order(&ranges, |i| -> Result<()> {
+            let (k, key, slot) = items[i];
+            let src = self.source(k, key)?;
+            let t = Instant::now();
+            self.device.write(&self.kinds[k].pool, slot as usize * self.kinds[k].bytes, src)?;
+            write += t.elapsed();
+            bytes += src.len() as u64;
+            Ok(())
+        })?;
+        Ok((t0.elapsed().saturating_sub(write), write, bytes))
     }
 
-    /// Start reading `experts` of `layer` that are not resident into the page cache
-    /// (asynchronous; e.g. the likely experts of the next layer).
-    pub fn prefetch(&self, layer: usize, experts: &[u32]) {
-        let st = self.lock();
-        for &e in experts {
-            let Ok(key) = self.key(layer, e) else { continue };
-            if st.slot_of[key as usize] != NONE {
-                continue;
+    /// Start reading `experts` of `layer` (all of them: `None`) that are not resident into
+    /// memory in the background, e.g. the next layer's during a long prefill chunk, whose
+    /// tokens route to nearly every expert: the disk reads overlap the device's work. Reads
+    /// at most what the page cache can hold besides a margin. Returns the bytes requested.
+    pub fn prefetch(&self, layer: usize, experts: Option<&[u32]>) -> u64 {
+        let all: Vec<u32>;
+        let experts = match experts {
+            Some(e) => e,
+            None => {
+                all = (0..self.experts as u32).collect();
+                &all
             }
-            for (k, kind) in self.kinds.iter().enumerate() {
-                if let Some(t) = &kind.layers[layer] {
-                    let _ = lapid::prefetch(t, self.range(k, e as usize));
+        };
+        let room = lapid::residency::available_memory().map_or(0, |a| a.saturating_sub(MIN_FREE) / 2);
+        let mut ranges = Vec::new();
+        let mut bytes = 0u64;
+        {
+            let st = self.lock();
+            for &e in experts {
+                let Ok(key) = self.key(layer, e) else { continue };
+                if st.slot_of[key as usize] != NONE {
+                    continue;
                 }
+                if bytes + self.slot_bytes() as u64 > room {
+                    break;
+                }
+                for (k, kind) in self.kinds.iter().enumerate() {
+                    if let Some(Op::Host(h)) = kind.layers[layer].as_ref().map(Tensor::op) {
+                        ranges.push((h.clone(), self.range(k, e as usize)));
+                    }
+                }
+                bytes += self.slot_bytes() as u64;
             }
         }
+        self.io.populate_background(ranges);
+        bytes
     }
 
     /// Routed SwiGLU-style experts through the cache (kinds `[gate, up, down]`): like
@@ -366,7 +424,8 @@ impl ExpertCache {
     /// weights `w [n, k]`. When the distinct experts exceed the pool, all passes but the
     /// last are evaluated here; the result must be evaluated before the next `ensure`.
     /// `x` and `w` should be realized (each pass re-reads them).
-    pub fn forward(&self, layer: usize, act: Activation, limit: Option<f32>, act_quant: bool, x: &Tensor, ids: &[i32], w: &Tensor) -> Result<Tensor> {
+    pub fn forward(&self, layer: usize, glu: Glu, x: &Tensor, ids: &[i32], w: &Tensor) -> Result<Tensor> {
+        let Glu { act, limit, act_quant } = glu;
         let pools = self.pools();
         let [gate, up, down] = pools.as_slice() else {
             return Err(Error::new("invalid_argument", "expert cache: forward needs [gate, up, down] stacks"));
@@ -416,6 +475,15 @@ impl ExpertCache {
         }
         acc.ok_or_else(|| Error::new("internal", "expert cache: no pass"))
     }
+}
+
+/// The expert MLP of [`ExpertCache::forward`]: `down(act(gate) * up)` with the optional
+/// clamp and fake-quant inputs of [`Experts`].
+#[derive(Clone, Copy, Debug)]
+pub struct Glu {
+    pub act: Activation,
+    pub limit: Option<f32>,
+    pub act_quant: bool,
 }
 
 /// Explicit cache size in bytes (`set_budget_gib`); 0 = not set.

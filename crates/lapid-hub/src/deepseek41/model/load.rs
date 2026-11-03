@@ -93,8 +93,11 @@ fn moe(l: &Loader<'_>, cfg: &Deepseek41Config, i: usize) -> Result<(Moe, Vec<Ten
     Ok((moe, stacks))
 }
 
-/// Device memory reserved besides the expert cache for activations and KV state.
-const SCRATCH: u64 = 4 << 30;
+/// Device memory reserved besides the expert cache for activations and KV state (a
+/// [`CACHED_PREFILL_CHUNK`]-token forward at the real dimensions, plus margin).
+const SCRATCH: u64 = 6 << 30;
+/// Prompt tokens per forward with the expert cache.
+const CACHED_PREFILL_CHUNK: usize = 2048;
 
 /// Where the routed experts live: graph leaves when they fit the expert budget (and always
 /// on the CPU, which reads the file mapping in place), else a device [`ExpertCache`] sized
@@ -214,6 +217,7 @@ pub(super) fn model(l: &Loader<'_>, meta: &Value) -> Result<Deepseek41Model> {
     let head = l.linear_checked("head", cfg.vocab_size, d, false)?;
     let norm = l.rms_norm_checked("norm", d, eps)?;
     let cache = place_experts(l, &cfg, &mut layers.iter_mut().map(|l| &mut l.moe).collect::<Vec<_>>(), stacks)?;
+    let prefill_chunk = if cache.is_some() { CACHED_PREFILL_CHUNK } else { 512 };
     Ok(Deepseek41Model {
         embed,
         head,
@@ -221,6 +225,7 @@ pub(super) fn model(l: &Loader<'_>, meta: &Value) -> Result<Deepseek41Model> {
         cache,
         device: l.device.clone(),
         lock: std::sync::Mutex::new(()),
+        prefill_chunk,
         hash,
         layers,
         cfg,

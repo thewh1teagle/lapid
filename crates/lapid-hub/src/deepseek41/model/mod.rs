@@ -116,6 +116,9 @@ pub struct Deepseek41Model {
     device: Device,
     /// Held by a cached forward: one at a time uses the cache's slots.
     lock: std::sync::Mutex<()>,
+    /// Prompt tokens per forward (larger with the cache: every chunk reads the union of its
+    /// tokens' experts, nearly all of them, so fewer chunks read less).
+    prefill_chunk: usize,
 }
 
 impl Deepseek41Model {
@@ -179,6 +182,10 @@ impl CausalLm for Deepseek41Model {
         &[encoding::EOS]
     }
 
+    fn prefill_chunk(&self) -> usize {
+        self.prefill_chunk
+    }
+
     /// V4.1 ships no Jinja template: prompts are the upstream `encoding/encoding.py` format.
     fn render_prompt(&self, messages_json: &str, tools_json: Option<&str>, _add_generation_prompt: bool, opts: &ChatOptions) -> Option<Result<String>> {
         Some(encoding::render_json(messages_json, tools_json, opts.enable_thinking.unwrap_or(false), None))
@@ -237,3 +244,5 @@ impl CausalLm for Deepseek41Model {
         Ok(Some(self.head.forward(&h)?))
     }
 }
+#[cfg(test)]
+mod bench_tests;

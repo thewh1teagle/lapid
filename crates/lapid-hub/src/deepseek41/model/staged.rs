@@ -73,11 +73,17 @@ impl Deepseek41Model {
             let m = self.layers[p.layer].moe.forward_cached(cache, &p.x, ids, &p.w)?;
             expand(&m, x, &p.post, &p.comb)
         };
+        // A chunk whose tokens pick nearly every expert: read the next layer's experts while
+        // the device works on this one.
+        let prefetch = n * self.cfg.top_k >= 4 * self.cfg.n_experts;
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some((p, host_ids)) = pending.take() {
                 let li = p.layer;
                 x = finish(p, &host_ids, &x)?;
                 tap(&mut pend_taps, format!("layers.{li}"), &x.reshape(&[n, hc * d])?);
+            }
+            if prefetch {
+                cache.prefetch(i, None);
             }
             if let Some(eg) = &layer.engram {
                 x = self.engram(eg, &x, ids, &st.history)?;
