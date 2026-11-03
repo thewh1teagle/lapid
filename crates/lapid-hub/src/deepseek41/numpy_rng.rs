@@ -47,9 +47,9 @@ fn seed_sequence(entropy: u128, words: usize) -> Vec<u32> {
         }
     }
     for &v in ent.iter().skip(POOL) {
-        for dst in 0..POOL {
+        for p in pool.iter_mut() {
             let h = hashmix(v);
-            pool[dst] = mix(pool[dst], h);
+            *p = mix(*p, h);
         }
     }
     let mut hash_const = INIT_B;

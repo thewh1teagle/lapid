@@ -45,6 +45,9 @@ pub(crate) struct Compressed {
     pub keys: Tensor,
 }
 
+/// Latents `[m, head_dim]` of the closed groups and their first positions.
+type Latents = (Tensor, Vec<usize>);
+
 pub(crate) struct Compressor {
     pub wkv: Linear,
     /// Gate projection (ratio 2).
@@ -66,7 +69,7 @@ fn rope_rows(rope: &TailRope, rows: &Tensor, positions: &[usize]) -> Result<Tens
 impl Compressor {
     /// The latents of the groups closed by `x [n, D]` at positions `pos..pos + n` (and their
     /// first positions), plus the next open-group state.
-    fn latents(&self, x: &Tensor, pos: usize, st: &CompState) -> Result<(Option<(Tensor, Vec<usize>)>, CompState)> {
+    fn latents(&self, x: &Tensor, pos: usize, st: &CompState) -> Result<(Option<Latents>, CompState)> {
         let n = x.shape()[0];
         let r = self.ratio;
         let mut next = st.clone();

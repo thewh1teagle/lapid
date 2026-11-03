@@ -81,7 +81,26 @@ mod tests {
         convert::CONVERT.convert(&model, lapid_convert::OutDType::F32, &out).expect("convert");
         let args = crate::cmd::ModelArgs { model: Some(out.display().to_string()), dtype: Some("fp32".into()), device: Some("cpu".into()) };
         let report = (ENTRY.verify)(Some(&root), &args).expect("verify");
+        let chunked = chunked_prefill_matches(&root, &out);
         let _ = std::fs::remove_file(&out);
+        chunked.expect("chunked prefill");
         assert_eq!(report["ok"], serde_json::json!(true), "{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+    }
+
+    /// The long prompt fed in uneven chunks (open compressor groups, selections and Engram
+    /// look-back carried across them) gives the logits of one whole prefill.
+    fn chunked_prefill_matches(root: &Path, file: &Path) -> lapid::Result<()> {
+        let result: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("result.json"))?)?;
+        let ids: Vec<u32> = serde_json::from_value(result["cases"]["long"]["prompt_tokens"].clone())?;
+        let llm = Deepseek41::load_with(file, &lapid::Device::cpu(), lapid_nn::Precision::FakeQuantWeights)?;
+        let whole = llm.step(&mut llm.new_session(), &ids)?;
+        let mut s = llm.new_session();
+        let mut last = Vec::new();
+        for c in [&ids[..37], &ids[37..38], &ids[38..151], &ids[151..]] {
+            last = llm.step(&mut s, c)?;
+        }
+        let diff = whole.iter().zip(&last).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(diff < 1e-3, "chunked prefill differs by {diff}");
+        Ok(())
     }
 }

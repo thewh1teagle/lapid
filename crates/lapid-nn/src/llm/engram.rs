@@ -168,7 +168,7 @@ impl Fp8Rows {
             let r = usize::try_from(id).ok().filter(|&r| r < self.rows);
             let Some(r) = r else { bail!("invalid_argument", "fp8 rows: row {id} outside the table ({} rows)", self.rows) };
             let (row, sc) = (&v[r * d..(r + 1) * d], &s[r * d / 32..(r + 1) * d / 32]);
-            for (block, &e) in row.chunks_exact(32).zip(sc) {
+            for (block, &e) in row.as_chunks::<32>().0.iter().zip(sc) {
                 let scale = f32::from_bits(u32::from(e) << 23); // 2^(e - 127); e = 0 -> 0 (2^-127 is subnormal)
                 let scale = if e == 0 { 2f32.powi(-127) } else if e == 255 { f32::NAN } else { scale };
                 out.extend(block.iter().map(|&q| self.lut[q as usize] * scale));
@@ -227,8 +227,8 @@ mod tests {
         let h = NgramHash::new(3, 2, vec![5, 6, 7, 8], 1, vec![vec![3, 5, 7]], vec![vec![11, 13, 17, 19]]).expect("layout");
         let rows = h.rows(0, &[], &[2, 3]);
         let reference = |t: [u64; 3]| {
-            let r1 = t[0] * 3 ^ t[1] * 5;
-            let r2 = r1 ^ t[2] * 7;
+            let r1 = (t[0] * 3) ^ (t[1] * 5);
+            let r2 = r1 ^ (t[2] * 7);
             vec![r1 % 11, r1 % 13 + 11, r2 % 17 + 24, r2 % 19 + 41]
         };
         let want: Vec<u64> = [reference([7, 1, 1]), reference([8, 7, 1])].concat();

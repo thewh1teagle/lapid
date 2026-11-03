@@ -69,6 +69,7 @@ pub mod vision;
 pub mod whisper;
 
 pub use deepseek4::Deepseek4;
+pub use deepseek41::Deepseek41;
 pub use embeddinggemma::{EmbedOptions, EmbeddingGemma};
 pub use gemma4::Gemma4;
 pub use lfm3::Lfm3;
