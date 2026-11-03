@@ -101,6 +101,7 @@ fn dot8(spec: &MatMulSpec, vec_a: bool, vec_b: bool, k: &str, out: &str) -> Stri
     let mut g = Gen::new();
     match spec.b_dtype {
         DType::Q4K | DType::Q5K | DType::Q6K => kquant::gemv_dot(&mut g, spec, vec_a, k, out),
+        DType::Mxfp4 => super::mxfp4::gemv_dot(&mut g, spec, vec_a, k, out),
         DType::Int8 | DType::Int4 => {
             let int8 = spec.b_dtype == DType::Int8;
             let e = g.reg("u32");

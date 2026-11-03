@@ -23,6 +23,7 @@ mod kquant;
 mod math;
 mod matmul;
 mod moe;
+mod mxfp4;
 mod par;
 mod qmat;
 mod reduce;

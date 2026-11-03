@@ -1,7 +1,7 @@
 //! MatMul: `out[bt, i, j] = epilogue(sum_k A[bt, i, k] * B[bt, k, j], extras...)`.
 //!
 //! Paths:
-//! * quantized B (`int8` / `int4` / K-quants), m > 8 rows: activations x dequantized weights,
+//! * quantized B (`int8` / `int4` / K-quants / MXFP4), m > 8 rows: activations x dequantized weights,
 //!   per element (no int8 activation blocks): bf16 `bfmmla` with f32 accumulation where the
 //!   CPU has BF16 (`qbf16.rs`, m >= 16), else f32 panels + the f32 GEMM microkernel
 //!   (`qdeq.rs`). `LAPID_CPU_INT8_ACT=1` selects the int8 activation paths below instead;

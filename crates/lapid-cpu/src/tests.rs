@@ -321,6 +321,13 @@ fn gather_plain_and_quant() {
             let want: Vec<f32> = ids.iter().flat_map(|&i| deq[i as usize * cols..(i as usize + 1) * cols].to_vec()).collect();
             close(&got, &want, 1e-6);
         }
+        // MXFP4 (AoS 17-byte blocks): rows dequantized exactly as lapid-quant's reference.
+        let bytes = lapid_quant::quantize(Format::Mxfp4, &table, rows, cols);
+        let deq = lapid_quant::dequantize(Format::Mxfp4, &bytes, rows, cols);
+        let spec = Arc::new(GatherSpec { table_dtype: DType::Mxfp4, out_dtype: DType::F32 });
+        let out = run(&be, Kernel::Gather(spec, dims.clone()), vec![be.upload(&bytes).unwrap(), idx.clone()], ids.len() * cols * 4);
+        let want: Vec<f32> = ids.iter().flat_map(|&i| deq[i as usize * cols..(i as usize + 1) * cols].to_vec()).collect();
+        close(&down(&be, &out, DType::F32), &want, 0.0);
         // Out-of-range index is an error, not UB.
         let bad = be.upload(bytemuck::cast_slice(&[0i32, 20])).unwrap();
         let spec = Arc::new(GatherSpec { table_dtype: DType::F32, out_dtype: DType::F32 });
@@ -328,6 +335,43 @@ fn gather_plain_and_quant() {
         let l = Launch { kernel: Kernel::Gather(spec, GatherDims { rows, cols, count: 2 }), inputs: vec![0, 1], output: 2 };
         let err = be.execute(&[l], &[up(&be, &table, DType::F32), bad, out]).unwrap_err();
         assert_eq!(err.code, "index_out_of_range");
+    }
+}
+
+/// MatMulId over an MXFP4 expert stack `[E, N, K]` (each expert `layout(..).total` bytes):
+/// decode-sized (int8 activations) and prefill-sized (exact) row counts per expert.
+#[test]
+fn matmul_id_mxfp4() {
+    let (e, n, k) = (5, 24, 96);
+    let mut rng = Rng(9);
+    let one = lapid_quant::layout(Format::Mxfp4, n, k).total;
+    let mut wb = vec![0u8; e * one];
+    let mut wf = Vec::new();
+    for x in 0..e {
+        let w: Vec<f32> = rng.vec(n * k).iter().map(|v| v * 0.1).collect();
+        let b = lapid_quant::quantize(Format::Mxfp4, &w, n, k);
+        wb[x * one..x * one + b.len()].copy_from_slice(&b);
+        wf.extend(lapid_quant::dequantize(Format::Mxfp4, &b, n, k));
+    }
+    for (t, r) in [(1usize, 2usize), (40, 3)] {
+        let x = rng.vec(t * k);
+        let ids: Vec<i32> = (0..t * r).map(|i| ((i * 7 + i / r) % e) as i32).collect();
+        let mut want = vec![0f32; t * r * n];
+        for i in 0..t * r {
+            let ex = ids[i] as usize;
+            for j in 0..n {
+                let s: f64 = (0..k).map(|p| x[(i / r) * k + p] as f64 * wf[(ex * n + j) * k + p] as f64).sum();
+                want[i * n + j] = s as f32;
+            }
+        }
+        let spec = Arc::new(MatMulIdSpec { x_dtype: DType::F32, w_dtype: DType::Mxfp4, out_dtype: DType::F32 });
+        let kernel = Kernel::MatMulId(spec, MatMulIdDims { t, r, e, n, k });
+        for be in backends() {
+            let ins = vec![up(&be, &x, DType::F32), be.upload(&wb).unwrap(), be.upload(bytemuck::cast_slice(&ids)).unwrap()];
+            let got = down(&be, &run(&be, kernel.clone(), ins, t * r * n * 4), DType::F32);
+            let err = rel_err(&got, &want);
+            assert!(err < if t * r <= 8 { 2e-2 } else { 1e-5 }, "t={t} r={r}: rel err {err}");
+        }
     }
 }
 

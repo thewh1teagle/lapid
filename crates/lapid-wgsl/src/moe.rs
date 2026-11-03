@@ -9,7 +9,7 @@ use lapid_tensor::{DType, Error, Result};
 
 use super::gather::scales_words;
 use super::gemv::gemv_cols;
-use super::{Key, Params, Plan, bad, check_plain, common, grid, kquant, template};
+use super::{Key, Params, Plan, bad, check_plain, check_quant_supported, common, grid, kquant, template};
 use crate::Caps;
 
 const KERNEL: &str = include_str!("kernels/matmul_id.wgsl");
@@ -17,6 +17,7 @@ const KERNEL: &str = include_str!("kernels/matmul_id.wgsl");
 pub(super) fn plan(spec: &Arc<MatMulIdSpec>, d: &MatMulIdDims, caps: &Caps) -> Result<Plan> {
     check_plain(spec.x_dtype, "matmul_id x")?;
     check_plain(spec.out_dtype, "matmul_id output")?;
+    check_quant_supported(spec.w_dtype, "matmul_id experts")?;
     let (so, stride) = match spec.w_dtype.quant_format() {
         Some(f) => {
             if !d.k.is_multiple_of(f.block_elems()) {

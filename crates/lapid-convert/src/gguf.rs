@@ -196,6 +196,8 @@ pub fn write_ggml_tensor(w: &mut ModelWriter, name: &str, t: &GgufTensor, data: 
         let keep = match (t.ggml_type.lapid_format(), target) {
             (Some(f @ (Format::Int8 | Format::Int4)), Target::Quant(g)) if f == g => Some(f),
             (Some(f @ (Format::Q4K | Format::Q5K | Format::Q6K)), Target::Quant(_)) => Some(f),
+            // MXFP4 (ggml type 39, `block_mxfp4`) is lapid's Mxfp4 layout: kept as-is.
+            (None, Target::Quant(_)) if t.ggml_type == GgmlType::Other(39) => Some(Format::Mxfp4),
             _ => None,
         };
         // ggml blocks run along ne[0] = the last row-major axis, which the policy quantizes.

@@ -90,8 +90,11 @@ pub(crate) fn unpack_block(fmt: Format, b: &[u8], out: &mut [i8; QK]) {
     }
 }
 
-/// Dequantize one 256-element block.
+/// Dequantize one block (256 elements; 32 for MXFP4).
 pub(crate) fn dequant_block(fmt: Format, b: &[u8], out: &mut [f32]) {
+    if fmt == Format::Mxfp4 {
+        return crate::mxfp4::dequant_block(b, out);
+    }
     let mut q = [0i8; QK];
     unpack_block(fmt, b, &mut q);
     match fmt {
@@ -128,7 +131,8 @@ pub(crate) struct KA<'a> {
     pub k: usize,
 }
 
-/// Borrowed K-quant matrix `[rows, cols]` (rows of `cols / 256` blocks).
+/// Borrowed AoS block matrix `[rows, cols]` (rows of `cols / block_elems` blocks: K-quants
+/// 256, MXFP4 32).
 #[derive(Clone, Copy)]
 pub(crate) struct KMat<'a> {
     pub fmt: Format,
@@ -140,7 +144,7 @@ impl<'a> KMat<'a> {
     #[inline(always)]
     pub fn block(&self, row: usize, blk: usize) -> &'a [u8] {
         let bb = self.fmt.block_bytes();
-        let o = (row * (self.cols / QK) + blk) * bb;
+        let o = (row * (self.cols / self.fmt.block_elems()) + blk) * bb;
         &self.bytes[o..o + bb]
     }
 }
@@ -160,6 +164,15 @@ pub(crate) struct KKernels {
 }
 
 pub(crate) fn select(isa: &crate::Isa, fmt: Format) -> KKernels {
+    if fmt == Format::Mxfp4 {
+        use crate::mxfp4::tile_scalar as ts;
+        #[cfg(target_arch = "aarch64")]
+        if isa.dotprod {
+            use crate::mxfp4::tile_sdot as t;
+            return KKernels { t1: t::<1>, t2: t::<2>, t4: t::<4> };
+        }
+        return KKernels { t1: ts::<1>, t2: ts::<2>, t4: ts::<4> };
+    }
     #[cfg(target_arch = "aarch64")]
     if isa.dotprod {
         use crate::matmul::kdot::tile;

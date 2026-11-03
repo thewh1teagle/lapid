@@ -98,11 +98,12 @@ pub(crate) fn matmul(ctx: &Ctx, ws: &mut Workspace, a: &AOp, b: &QMat, d: &MatMu
     let qa = grow(&mut ws.q, rows * k);
     let sa = grow(&mut ws.s, rows * kg);
     // K formats: per-group `da * sum(q)` for the min terms.
-    let bs = grow(&mut ws.pa_f, if b.is_k() { rows * kg } else { 0 });
+    let has_bs = b.is_k() && b.fmt != lapid_quant::Format::Mxfp4;
+    let bs = grow(&mut ws.pa_f, if has_bs { rows * kg } else { 0 });
     let a_f32 = a.src.as_f32();
     {
         let (sp, bp) = (SyncPtr(sa.as_mut_ptr()), SyncPtr(bs.as_mut_ptr()));
-        let has_bs = b.is_k();
+        // K formats with a min term: per-group `da * sum(q)`.
         par::chunks_mut(parallel && rows > 1, qa, k, || vec![0f32; if a_f32.is_some() { 0 } else { k }], |tmp, r, q| {
             let (sp, bp) = (sp, bp);
             // SAFETY: row r owns scales / sums r*kg..(r+1)*kg exclusively.
@@ -119,7 +120,7 @@ pub(crate) fn matmul(ctx: &Ctx, ws: &mut Workspace, a: &AOp, b: &QMat, d: &MatMu
             quantize_row_sums(x, q, s, bsr);
         });
     }
-    let bsum = if b.is_k() { Some(&*bs) } else { None };
+    let bsum = if has_bs { Some(&*bs) } else { None };
     let qa = QA { q: qa, s: sa, k };
 
     // 2. Tiles.
