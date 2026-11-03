@@ -134,6 +134,7 @@ fn same_src(a: &PlanSrc, b: &PlanSrc) -> bool {
 }
 
 /// A compiled sample of one graph structure.
+#[derive(Clone)]
 pub(crate) struct Sample {
     dims: Vec<u64>,
     nums: Vec<i64>,
@@ -339,6 +340,50 @@ impl Line {
     }
 }
 
+/// Recent samples kept per structure to find more lines.
+const HISTORY: usize = 4;
+/// Lines kept per structure besides the main one.
+const MAX_ALT: usize = 4;
+
+/// Verified lines through non-consecutive samples, for dims that do not move on one line
+/// from step to step but do every other step: e.g. the compressed rows of a ratio-2 KV
+/// compressor grow on every second decode step (one line per parity), which restarts
+/// the main line at every step.
+#[derive(Default)]
+pub(crate) struct AltLines {
+    hist: std::collections::VecDeque<Sample>,
+    lines: Vec<Line>,
+}
+
+impl AltLines {
+    pub(crate) fn predict(&mut self, dims: &[u64]) -> Option<Arc<Plan>> {
+        self.lines.iter_mut().find_map(|l| l.predict(dims))
+    }
+
+    /// Record a freshly compiled sample: when two recent samples `x`, `y` and `s` lie on
+    /// one line and its extrapolation matches `s` exactly, `(y, s)` becomes a verified line.
+    pub(crate) fn record(&mut self, s: &Sample) {
+        let on_line = |x: &Sample, y: &Sample| {
+            x.dims != y.dims
+                && param(&x.dims, &y.dims, &s.dims).and_then(|t| extrapolate(&x.nums, &y.nums, t)).is_some_and(|v| v == s.nums)
+                && same_skeleton(&skeleton(&x.plan), &skeleton(&s.plan))
+                && same_skeleton(&skeleton(&y.plan), &skeleton(&s.plan))
+        };
+        let n = self.hist.len();
+        let found = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).find(|&(i, j)| on_line(&self.hist[i], &self.hist[j]));
+        if let Some((_, j)) = found {
+            if self.lines.len() >= MAX_ALT {
+                self.lines.remove(0);
+            }
+            self.lines.push(Line::Two { a: self.hist[j].clone(), b: s.clone(), verified: true, scratch: None, moving: None });
+        }
+        if self.hist.len() >= HISTORY {
+            self.hist.pop_front();
+        }
+        self.hist.push_back(s.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::plan::{GraphKey, Lookup, Plan, PlanCache};
@@ -382,6 +427,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Dims on two interleaved lines (a second KV of `(n + 1) / 2` rows, as a ratio-2
+    /// compressor): predicted from the third sample of each parity on, always exact.
+    #[test]
+    fn every_other_step_lines() {
+        let dev = Device::cpu();
+        let cache = dev.upload(&Tensor::zeros(&[1, 32, 2, 8], lapid_tensor::DType::F32).contiguous().unwrap()).unwrap();
+        let mut pc = PlanCache::default();
+        let mut predicted = 0;
+        for n in 1..24 {
+            let mut outs = step(&cache, n);
+            let c = n.div_ceil(2);
+            let kv = cache.slice(1, 0, c).unwrap().permute(&[0, 2, 1, 3]).unwrap();
+            let q = Tensor::from_f32(&vec![0.5; 16], &[1, 2, 1, 8]).unwrap();
+            outs.push(Tensor::attention(&q, &kv, &kv, None, 0.3, false).unwrap());
+            let refs: Vec<&Tensor> = outs.iter().collect();
+            let key = GraphKey::new(&refs);
+            let compiled = Plan::new(lapid_compiler::compile(&outs, &CompileOptions::default()).unwrap(), &key);
+            match pc.get(&key) {
+                Some((p, _)) => {
+                    predicted += 1;
+                    assert_eq!(nums(&p), nums(&compiled), "n={n}");
+                    assert!(same_skeleton(&skeleton(&p), &skeleton(&compiled)), "n={n}");
+                    assert_eq!(p.slot_bytes, compiled.slot_bytes, "n={n}");
+                }
+                None => pc.insert(&key, Arc::new(compiled)),
+            }
+        }
+        assert!(predicted >= 14, "only {predicted} of 23 steps predicted");
     }
 
     #[test]
