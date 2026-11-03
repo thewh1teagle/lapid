@@ -16,7 +16,7 @@ use super::{common, template};
 use super::expr::{self, render, uses_bits, uses_load};
 use super::gather::scales_words;
 use super::gemv::{gemv_cols, gemv_nc, vec_variants};
-use super::{Key, Params, Plan, bad, check_plain, grid};
+use super::{Key, Params, Plan, bad, check_plain, check_quant_supported, grid};
 use crate::Caps;
 
 const GEMM: &str = include_str!("kernels/gemm.wgsl");
@@ -30,6 +30,7 @@ const GEMV_MAX_M: usize = 4;
 pub(super) fn plan(spec: &Arc<MatMulSpec>, d: &MatMulDims, caps: &Caps) -> Result<Plan> {
     check_plain(spec.a_dtype, "matmul A")?;
     check_plain(spec.out_dtype, "matmul output")?;
+    check_quant_supported(spec.b_dtype, "matmul B")?;
     for &t in &spec.extra_dtypes {
         check_plain(t, "matmul epilogue input")?;
     }

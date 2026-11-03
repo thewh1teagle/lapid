@@ -44,6 +44,12 @@ pub(crate) fn rand_weight(fmt: Format, n: usize, k: usize, seed: u64) -> Vec<u8>
                 v[..l.qs_bytes].iter_mut().for_each(|b| *b = (*b as i8).max(-127) as u8);
             }
         }
+        Format::Mxfp4 => {
+            // e = 120: d = 2^-8
+            for b in v[..l.qs_bytes].chunks_exact_mut(fmt.block_bytes()) {
+                b[0] = 120;
+            }
+        }
         _ => {
             for b in v[..l.qs_bytes].chunks_exact_mut(fmt.block_bytes()) {
                 if fmt == Format::Q6K {
@@ -125,7 +131,7 @@ fn kbench_gemv() {
     let be = CpuBackend::new();
     eprintln!("{}", be.device_name());
     let mut shapes: Vec<(usize, usize, Format)> = SHAPES.to_vec();
-    shapes.extend([(3072, 1024, Format::Q5K), (3072, 1024, Format::Int8), (3072, 1024, Format::Int4), (64, 1024, Format::Q4K), (256, 1024, Format::Q4K)]);
+    shapes.extend([(3072, 1024, Format::Q5K), (3072, 1024, Format::Int8), (3072, 1024, Format::Int4), (3072, 1024, Format::Mxfp4), (2048, 4096, Format::Q4K), (2048, 4096, Format::Mxfp4), (64, 1024, Format::Q4K), (256, 1024, Format::Q4K)]);
     for m in [1usize, 2] {
         for &(n, k, fmt) in &shapes {
             let a = be.upload(bytemuck::cast_slice(&rnd(m * k, 3))).unwrap();
@@ -157,7 +163,7 @@ fn kbench_gemm() {
     eprintln!("{}", be.device_name());
     let ms: Vec<usize> = std::env::var("KB_M").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or(vec![64, 512]);
     for m in ms {
-        for &(n, k, fmt) in &SHAPES[..7] {
+        for &(n, k, fmt) in SHAPES[..7].iter().chain(&[(3072, 1024, Format::Mxfp4), (2048, 4096, Format::Q4K), (2048, 4096, Format::Mxfp4)]) {
             let a = be.upload(bytemuck::cast_slice(&rnd(m * k, 3))).unwrap();
             let out = be.alloc(m * n * 4).unwrap();
             let b = be.upload(&rand_weight(fmt, n, k, 7)).unwrap();

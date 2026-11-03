@@ -187,3 +187,27 @@ fn writes_through_policy() {
     std::fs::remove_file(&src).ok();
     std::fs::remove_file(&out).ok();
 }
+
+#[test]
+fn mxfp4_kept_as_is() {
+    // 3 rows x 64 = 6 ggml block_mxfp4 (17 B): stored unchanged as DType::Mxfp4.
+    let blocks: Vec<u8> = (0..6 * 17).map(|i| if i % 17 == 0 { 120 + (i / 17) as u8 } else { (i * 37 % 251) as u8 }).collect();
+    let mut g = GgufBuilder::default();
+    g.tensor("mx", &[64, 3], GgmlType::from_id(39), blocks.clone());
+    let src = tmp("mx.gguf");
+    std::fs::write(&src, g.build(3)).expect("write");
+    let f = GgufFile::open(&src).expect("open");
+    let out = tmp("mx.lapid");
+    let meta = crate::writer::metadata("t", "test", OutDType::Int8, "mit", json!({"repo": "x/y"}));
+    let mut w = ModelWriter::create(&out, meta, OutDType::Int8, role, 3).expect("create");
+    for t in &f.tensors {
+        f.write_tensor(&mut w, &t.name, t, None).expect("write");
+    }
+    w.finish(&[]).expect("finish");
+    let r = lapid_format::Reader::open(&out).expect("open lapid");
+    let t = r.tensor("mx").expect("mx");
+    assert_eq!((t.dtype, t.shape.clone()), (DType::Mxfp4, vec![3, 64]));
+    assert_eq!(&r.tensor_bytes(t)[..blocks.len()], &blocks[..]);
+    std::fs::remove_file(&src).ok();
+    std::fs::remove_file(&out).ok();
+}

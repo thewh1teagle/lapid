@@ -247,6 +247,9 @@ pub(crate) fn load_quant(g: &mut Gen, d: DType, ptr: &str, so: &str, e: &str, ds
     if super::kquant::is_kquant(d) {
         return super::kquant::load_elem(g, d, ptr, e, dst);
     }
+    if d == DType::Mxfp4 {
+        return super::mxfp4::load_elem(g, ptr, e, dst);
+    }
     let q = g.reg("f32");
     if d == DType::Int8 {
         let a = g.addr(ptr, e, 1);
