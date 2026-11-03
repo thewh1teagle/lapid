@@ -1,4 +1,4 @@
-# lapid quantization formats: `int8`, `int4`, `q4_k`, `q5_k`, `q6_k`, `iq2_xxs`, `iq2_s`, `iq3_xxs`
+# lapid quantization formats: `int8`, `int4`, `q4_k`, `q5_k`, `q6_k`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`
 
 Reference implementation: `crates/lapid-quant` (`quantize`, `dequantize`, `dequantize_row`,
 `from_ggml_blocks`, `pack_int4`, module `kquant`). All integers and f16 values are little
@@ -137,14 +137,16 @@ records of 4096 values over 8 distributions incl. zero blocks, outliers, mixed s
 GGUF import keeps q4_K / q5_K / q6_K tensors as they are (`from_ggml_blocks` copies and
 pads) whenever the dtype policy quantizes the tensor at all.
 
-## i-quants: `iq2_xxs`, `iq2_s`, `iq3_xxs`
+## i-quants: `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`
 
-ggml's grid-codebook super-blocks, byte-identical to GGUF types 16, 22 and 18, with the same
+ggml's grid-codebook super-blocks, byte-identical to GGUF types 16, 17, 22 and 18, with the same
 row-major AoS layout and padding as the k-quants (256 elements per block):
 
 ```
 iq2_xxs (66 B, 2.0625 bpw): f16 d | 8 x { u8 idx[4] | u32 (4 x 7 sign bits, 4-bit scale s) }
     x = d·(0.5 + s)·0.25 · iq2xxs_grid[idx][j] · ±1          (scale per 32)
+iq2_xs  (74 B, 2.3125 bpw): f16 d | qs u16[32] (9-bit index | 7 sign bits << 9) | scales[8]
+    x = d·(0.5 + s)·0.25 · iq2xs_grid[idx][j] · ±1            (scale per 16, 512-entry grid)
 iq2_s   (82 B, 2.5625 bpw): f16 d | qs[32] (index low bytes) | signs[32] | qh[8] (2 index
     bits per 8 values) | scales[8] (4 bits per 16)
     x = d·(0.5 + s)·0.25 · iq2s_grid[idx][j] · ±1             (scale per 16, 1024-entry grid)
@@ -156,12 +158,12 @@ The 7 stored sign bits of an 8-value group get an 8th bit making the count of ne
 even (`ksigns_iq2xs`). Grid bytes: iq2 {8, 25, 43}, iq3 {4, 12, …, 52, 62}; the grids are
 derived from ggml's lattice point lists (`kgrid_*`) and checked against `ggml-common.h`.
 
-Quantization (`lapid_quant::{iq2_xxs, iq2_s, iq3_xxs}::quantize(rows, n_per_row,
-imatrix)`) ports `quantize_iq2_xxs` / `quantize_iq2_s` / `quantize_iq3_xxs` with their
+Quantization (`lapid_quant::{iq2_xxs, iq2_xs, iq2_s, iq3_xxs}::quantize(rows, n_per_row,
+imatrix)`) ports `quantize_iq2_xxs` / `quantize_iq2_xs` / `quantize_iq2_s` / `quantize_iq3_xxs` with their
 lattice maps and neighbour lists (`iq2xs_init_impl` / `iq3xs_init_impl`): optional
 importance weights per column (an imatrix); without them ggml's default weighting (iq2_s:
-`0.25·σ² + x²`, iq3_xxs: `x²`; ggml requires an imatrix for iq2_xxs, lapid then uses unit
-importance). Multithreaded over blocks, deterministic. Bit-exactness (bytes and dequantized
+`0.25·σ² + x²`, iq3_xxs: `x²`; ggml requires an imatrix for iq2_xxs and iq2_xs, lapid then
+uses unit importance). Multithreaded over blocks, deterministic. Bit-exactness (bytes and dequantized
 values, with and without an imatrix) is checked against fixtures generated once by
 `tools/iquant_golden/gen.sh` (links ggml's `ggml-quants.c`, `-ffp-contract=off`).
 `quantize(format, ..)` uses the default weighting.

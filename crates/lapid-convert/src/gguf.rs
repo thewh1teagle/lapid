@@ -200,7 +200,7 @@ pub fn write_ggml_tensor(w: &mut ModelWriter, name: &str, t: &GgufTensor, data: 
         let target = w.target(name, &shape);
         let keep = match (t.ggml_type.lapid_format(), target) {
             (Some(f @ (Format::Int8 | Format::Int4)), Target::Quant(g)) if f == g => Some(f),
-            (Some(f @ (Format::Q4K | Format::Q5K | Format::Q6K | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs)), Target::Quant(_)) => Some(f),
+            (Some(f @ (Format::Q4K | Format::Q5K | Format::Q6K | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2Xs | Format::Iq2S | Format::Iq3Xxs)), Target::Quant(_)) => Some(f),
             _ => None,
         };
         // ggml blocks run along ne[0] = the last row-major axis, which the policy quantizes.

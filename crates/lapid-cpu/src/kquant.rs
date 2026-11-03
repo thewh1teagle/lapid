@@ -86,7 +86,7 @@ pub(crate) fn unpack_block(fmt: Format, b: &[u8], out: &mut [i8; QK]) {
                 }
             }
         }
-        Format::Int8 | Format::Int4 | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs => unreachable!("not a K format"),
+        Format::Int8 | Format::Int4 | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2Xs | Format::Iq2S | Format::Iq3Xxs => unreachable!("not a K format"),
     }
 }
 
@@ -121,7 +121,7 @@ pub(crate) fn dequant_block(fmt: Format, b: &[u8], out: &mut [f32]) {
                 }
             }
         }
-        Format::Int8 | Format::Int4 | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs => unreachable!("not a K format"),
+        Format::Int8 | Format::Int4 | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2Xs | Format::Iq2S | Format::Iq3Xxs => unreachable!("not a K format"),
     }
 }
 

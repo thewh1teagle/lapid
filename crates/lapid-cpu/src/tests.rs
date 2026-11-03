@@ -342,7 +342,7 @@ fn gather_plain_and_quant() {
 /// decode-sized (int8 activations) and prefill-sized (exact) row counts per expert.
 #[test]
 fn matmul_id_mxfp4() {
-    for (dt, k) in [(DType::Mxfp4, 96), (DType::Iq2Xxs, 256), (DType::Iq2S, 512), (DType::Iq3Xxs, 256)] {
+    for (dt, k) in [(DType::Mxfp4, 96), (DType::Iq2Xxs, 256), (DType::Iq2Xs, 256), (DType::Iq2S, 512), (DType::Iq3Xxs, 256)] {
         matmul_id_quant(dt, k);
     }
 }

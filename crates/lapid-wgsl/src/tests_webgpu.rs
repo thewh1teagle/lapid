@@ -118,7 +118,7 @@ fn webgpu_kernels_validate() {
 #[test]
 fn mxfp4_rejected_at_plan() {
     let c = Caps::baseline();
-    for w in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2S, DType::Iq3Xxs] {
+    for w in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2Xs, DType::Iq2S, DType::Iq3Xxs] {
         let view = MatView { offset: 0, batch_stride: 0, row_stride: 256 };
         let dims = MatMulDims { batch: 1, m: 1, n: 4, k: 256, a: view.clone(), b: view, extra_views: vec![], out: MatView::contiguous(1, 4) };
         let gather = Kernel::Gather(Arc::new(GatherSpec { table_dtype: w, out_dtype: DType::F32 }), GatherDims { rows: 4, cols: 256, count: 1 });

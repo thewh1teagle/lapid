@@ -4,6 +4,7 @@
 // Writes into the output directory:
 //   input.bin    u32 rows | u32 cols | f32 x[rows*cols] | f32 imatrix[cols]
 //   grids.bin    iq2xxs_grid (u64 x256) | iq2s_grid (u64 x1024) | iq3xxs_grid (u32 x256) | ksigns (u8 x128)
+//                | iq2xs_grid (u64 x512)
 //   <fmt>.bin    quantize(x, imatrix) | dequantize(that) as f32
 //                [| quantize(x, NULL) | dequantize(that)]   (iq2_s, iq3_xxs: ggml default weighting)
 #define GGML_COMMON_DECL_C
@@ -87,14 +88,19 @@ int main(int argc, char ** argv) {
     fwrite(iq2s_grid, 8, 1024, f);
     fwrite(iq3xxs_grid, 4, 256, f);
     fwrite(ksigns_iq2xs, 1, 128, f);
+    fwrite(iq2xs_grid, 8, 512, f);
     fclose(f);
 
     iq2xs_init_impl(GGML_TYPE_IQ2_XXS);
+    iq2xs_init_impl(GGML_TYPE_IQ2_XS);
     iq2xs_init_impl(GGML_TYPE_IQ2_S);
     iq3xs_init_impl(256);
 
     f = out(dir, "iq2_xxs.bin");
     emit(f, quantize_iq2_xxs, (dfn)dequantize_row_iq2_xxs, sizeof(block_iq2_xxs), x, w);
+    fclose(f);
+    f = out(dir, "iq2_xs.bin");
+    emit(f, quantize_iq2_xs, (dfn)dequantize_row_iq2_xs, sizeof(block_iq2_xs), x, w);
     fclose(f);
     f = out(dir, "iq2_s.bin");
     emit(f, quantize_iq2_s, (dfn)dequantize_row_iq2_s, sizeof(block_iq2_s), x, w);

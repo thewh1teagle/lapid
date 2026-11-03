@@ -128,7 +128,7 @@ pub(crate) fn load(g: &mut Gen, d: DType, ptr: &str, idx: &str, dst: &str, nc: b
             g.op(format!("cvt.rn.f32.s32 {dst}, {s}"));
         }
         // quantized buffers go through `load_quant`
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs => {
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2Xs | DType::Iq2S | DType::Iq3Xxs => {
             g.op(format!("mov.f32 {dst}, 0f7FC00000"))
         }
     }
@@ -236,7 +236,7 @@ pub(crate) fn store_if(g: &mut Gen, d: DType, ptr: &str, idx: &str, v: &str, pre
             g.op(format!("cvt.rzi.s32.f32 {s}, {v}"));
             g.op(format!("{at}st.global.s32 [{a}], {s}"));
         }
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs => {}
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2Xs | DType::Iq2S | DType::Iq3Xxs => {}
     }
 }
 

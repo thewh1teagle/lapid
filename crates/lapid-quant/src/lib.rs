@@ -20,8 +20,8 @@
 //! (see `layout` and `kquant`); `quantize` / `dequantize` are bit-exact with ggml's
 //! `quantize_row_q*_K_ref` / `dequantize_row_q*_K`.
 //!
-//! The i-quants (IQ2_XXS, IQ2_S, IQ3_XXS) are ggml super-blocks stored as in GGUF too; their
-//! modules ([`iq2_xxs`], [`iq2_s`], [`iq3_xxs`]) quantize with optional importance weights
+//! The i-quants (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS) are ggml super-blocks stored as in GGUF
+//! too; their modules ([`iq2_xxs`], [`iq2_xs`], [`iq2_s`], [`iq3_xxs`]) quantize with optional importance weights
 //! (imatrix). `quantize(format, ..)` uses ggml's default weighting.
 
 pub const GROUP: usize = 32;
@@ -43,6 +43,8 @@ pub enum Format {
     /// ggml IQ2_XXS: 256-element super-blocks of 66 bytes (2.06 bpw), AoS as in GGUF (see
     /// [`iq2_xxs`]).
     Iq2Xxs,
+    /// ggml IQ2_XS: 256-element super-blocks of 74 bytes (2.31 bpw), AoS as in GGUF.
+    Iq2Xs,
     /// ggml IQ2_S: 256-element super-blocks of 82 bytes (2.56 bpw), AoS as in GGUF.
     Iq2S,
     /// ggml IQ3_XXS: 256-element super-blocks of 98 bytes (3.06 bpw), AoS as in GGUF.
@@ -54,7 +56,7 @@ impl Format {
     pub const fn block_elems(self) -> usize {
         match self {
             Format::Int8 | Format::Int4 | Format::Mxfp4 => GROUP,
-            Format::Q4K | Format::Q5K | Format::Q6K | Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs => 256,
+            Format::Q4K | Format::Q5K | Format::Q6K | Format::Iq2Xxs | Format::Iq2Xs | Format::Iq2S | Format::Iq3Xxs => 256,
         }
     }
     /// Bytes per block for the AoS K formats (0 for the SoA Int8/Int4 formats).
@@ -66,6 +68,7 @@ impl Format {
             Format::Q6K => 210,
             Format::Mxfp4 => mxfp4::BYTES,
             Format::Iq2Xxs => iq2::IQ2XXS_BYTES,
+            Format::Iq2Xs => iq2::IQ2XS_BYTES,
             Format::Iq2S => iq2::IQ2S_BYTES,
             Format::Iq3Xxs => iq3::IQ3XXS_BYTES,
         }
@@ -73,9 +76,9 @@ impl Format {
     pub const fn is_aos(self) -> bool {
         self.block_bytes() != 0
     }
-    /// The grid-based i-quants (IQ2_XXS, IQ2_S, IQ3_XXS).
+    /// The grid-based i-quants (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS).
     pub const fn is_iquant(self) -> bool {
-        matches!(self, Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs)
+        matches!(self, Format::Iq2Xxs | Format::Iq2Xs | Format::Iq2S | Format::Iq3Xxs)
     }
 }
 
@@ -202,6 +205,11 @@ iquant_module!(
     /// IQ2_XXS (2.0625 bpw). ggml requires an imatrix for this format; without one, unit
     /// importance is used.
     iq2_xxs, crate::iq2::IQ2XXS_BYTES, crate::iq2::quantize_xxs, crate::iq2::quantize_iq2xxs, crate::iq2::dequantize_iq2xxs
+);
+iquant_module!(
+    /// IQ2_XS (2.3125 bpw). ggml requires an imatrix for this format; without one, unit
+    /// importance is used.
+    iq2_xs, crate::iq2::IQ2XS_BYTES, crate::iq2::quantize_xs, crate::iq2::quantize_iq2xs, crate::iq2::dequantize_iq2xs
 );
 iquant_module!(
     /// IQ2_S (2.5625 bpw).

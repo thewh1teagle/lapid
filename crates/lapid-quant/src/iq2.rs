@@ -1,10 +1,13 @@
-//! ggml IQ2_XXS (2.0625 bpw) and IQ2_S (2.5625 bpw): 256-element super-blocks stored exactly
-//! as in GGUF (AoS, little endian). Bit-exact ports of `quantize_row_iq2_{xxs,s}_impl` and
-//! `dequantize_row_iq2_{xxs,s}` (see `iqgrid` for the shared lattice machinery).
+//! ggml IQ2_XXS (2.0625 bpw), IQ2_XS (2.3125 bpw) and IQ2_S (2.5625 bpw): 256-element
+//! super-blocks stored exactly as in GGUF (AoS, little endian). Bit-exact ports of
+//! `quantize_row_iq2_{xxs,xs,s}_impl` and `dequantize_row_iq2_{xxs,xs,s}` (see `iqgrid` for
+//! the shared lattice machinery).
 //!
 //! ```text
 //! IQ2_XXS (66 B): f16 d | qs: 8 x (u32 grid indices (4 x u8) | u32 signs (4 x 7 bits) + 4-bit scale)
 //!   32-group ib: x = d * (0.5 + s) * 0.25 * iq2xxs_grid[idx][j] * sign
+//! IQ2_XS (74 B):  f16 d | qs u16[32] (9-bit grid index | 7 sign bits << 9) | scales[8] (4
+//!   bits per 16): x = d * (0.5 + s) * 0.25 * iq2xs_grid[idx][j] * sign
 //! IQ2_S (82 B):   f16 d | qs[32] grid index low bytes | signs[32] | qh[8] (2 high index bits
 //!   per 8-group) | scales[8] (4 bits per 16-group)
 //!   16-group: x = d * (0.5 + s) * 0.25 * iq2s_grid[idx][j] * sign
@@ -12,9 +15,13 @@
 
 use half::f16;
 
-use crate::iqgrid::{IQ2S_GRID, IQ2XXS_GRID, KMASK, KSIGNS, QK_K, fmax, lattice_iq2s, lattice_iq2xxs, make_qp_quants, nearest_int, quantize_rows};
+use crate::iqgrid::{
+    IQ2S_GRID, IQ2XS_GRID, IQ2XXS_GRID, KMASK, KSIGNS, QK_K, fmax, lattice_iq2s, lattice_iq2xs, lattice_iq2xxs, make_qp_quants,
+    nearest_int, quantize_rows,
+};
 
 pub const IQ2XXS_BYTES: usize = 66;
+pub const IQ2XS_BYTES: usize = 74;
 pub const IQ2S_BYTES: usize = 82;
 
 #[inline]
@@ -40,6 +47,24 @@ pub fn dequantize_iq2xxs(b: &[u8], y: &mut [f32]) {
             for j in 0..8 {
                 let s = if signs & KMASK[j] != 0 { -1.0 } else { 1.0 };
                 y[32 * ib + 8 * l + j] = db * f32::from(grid[j]) * s;
+            }
+        }
+    }
+}
+
+/// `dequantize_row_iq2_xs` for one block.
+pub fn dequantize_iq2xs(b: &[u8], y: &mut [f32]) {
+    let d = h(b, 0);
+    for ib in 0..8 {
+        let sc = b[66 + ib];
+        let db = [d * (0.5 + (sc & 15) as f32) * 0.25, d * (0.5 + (sc >> 4) as f32) * 0.25];
+        for l in 0..4 {
+            let q = u16::from_le_bytes([b[2 + 8 * ib + 2 * l], b[3 + 8 * ib + 2 * l]]);
+            let grid = IQ2XS_GRID[usize::from(q & 511)].to_le_bytes();
+            let signs = KSIGNS[usize::from(q >> 9)];
+            for j in 0..8 {
+                let s = if signs & KMASK[j] != 0 { -1.0 } else { 1.0 };
+                y[32 * ib + 8 * l + j] = db[l / 2] * f32::from(grid[j]) * s;
             }
         }
     }
@@ -234,8 +259,21 @@ pub fn quantize_iq2xxs(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
 
 /// `quantize_row_iq2_s_impl` for one block (`qw = None`: ggml's default weighting).
 pub fn quantize_iq2s(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
+    quantize16(false, xbl, qw, out)
+}
+
+/// `quantize_row_iq2_xs_impl` for one block. ggml requires importance weights for IQ2_XS;
+/// without them (`qw = None`) this uses unit weights.
+pub fn quantize_iq2xs(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
+    quantize16(true, xbl, qw, out)
+}
+
+/// The shared 16-element sub-block search of IQ2_S and IQ2_XS (`xs`): the IQ2_XS variant
+/// uses the 512-point lattice, sign parity (7 stored bits), `sigma2 = sum x^2 / 256`, no
+/// default weighting and no `d` fudge factor.
+fn quantize16(xs: bool, xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
     const KMAX_Q: i32 = 3;
-    let lat = lattice_iq2s();
+    let lat = if xs { lattice_iq2xs() } else { lattice_iq2s() };
     let mut scales = [0f32; 16];
     let mut weight = [0f32; 16];
     let mut xval = [0f32; 16];
@@ -244,20 +282,25 @@ pub fn quantize_iq2s(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
     let mut waux = [0f32; 16];
     let mut is_on_grid_aux = [true; 2];
     let mut block_signs = [0u8; 2];
-    let y = &mut out[..IQ2S_BYTES];
+    let y = &mut out[..if xs { IQ2XS_BYTES } else { IQ2S_BYTES }];
     y.fill(0);
     let mut max_scale = 0f32;
     let mut sumx2 = 0f32;
     for &v in &xbl[..QK_K] {
         sumx2 += v * v;
     }
-    let sigma2 = 2.0 * sumx2 / QK_K as f32;
+    let sigma2 = if xs { sumx2 / QK_K as f32 } else { 2.0 * sumx2 / QK_K as f32 };
     for ib in 0..16 {
         let xb = &xbl[16 * ib..16 * ib + 16];
         match qw {
             Some(w) => {
                 for i in 0..16 {
                     weight[i] = w[16 * ib + i] * (sigma2 + xb[i] * xb[i]).sqrt();
+                }
+            }
+            None if xs => {
+                for i in 0..16 {
+                    weight[i] = (sigma2 + xb[i] * xb[i]).sqrt();
                 }
             }
             None => {
@@ -270,23 +313,38 @@ pub fn quantize_iq2s(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
             waux[i] = weight[i].sqrt();
         }
         for k in 0..2 {
+            let mut nflip = 0;
             let mut s = 0u8;
             for i in 0..8 {
                 if xb[8 * k + i] >= 0.0 {
                     xval[8 * k + i] = xb[8 * k + i];
                 } else {
                     xval[8 * k + i] = -xb[8 * k + i];
+                    nflip += 1;
                     s |= 1 << i;
                 }
             }
-            block_signs[k] = s;
+            if xs && nflip % 2 != 0 {
+                let mut imin = 0;
+                let mut min = weight[8 * k] * xb[8 * k] * xb[8 * k];
+                for i in 1..8 {
+                    let ax = weight[8 * k + i] * xb[8 * k + i] * xb[8 * k + i];
+                    if ax < min {
+                        min = ax;
+                        imin = i;
+                    }
+                }
+                xval[8 * k + imin] = -xval[8 * k + imin];
+                s ^= 1 << imin;
+            }
+            block_signs[k] = if xs { s & 127 } else { s };
         }
         let mut max = xval[0];
         for &v in &xval[1..] {
             max = fmax(max, v);
         }
         l.fill(0);
-        if max < 1e-8 {
+        if max < if xs { 1e-15 } else { 1e-8 } {
             scales[ib] = 0.0;
             continue;
         }
@@ -351,33 +409,42 @@ pub fn quantize_iq2s(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
         if scale < 0.0 {
             scale = -scale;
             for s in &mut block_signs {
-                *s = !*s;
+                *s = if xs { !*s & 127 } else { !*s };
             }
         }
         for k in 0..2 {
             let u = pack8(&l[8 * k..8 * k + 8]);
             let gi = lat.map[u];
-            assert!(gi >= 0, "iq2_s: point {u} not on grid");
+            assert!(gi >= 0, "iq2_s / iq2_xs: point {u} not on grid");
             let i8 = 2 * ib + k;
-            y[2 + i8] = (gi & 255) as u8;
-            y[66 + i8 / 4] |= ((gi >> 8) << (2 * (i8 % 4))) as u8;
-            y[34 + i8] = block_signs[k];
+            if xs {
+                let q = gi as u16 | (u16::from(block_signs[k]) << 9);
+                y[2 + 2 * i8..4 + 2 * i8].copy_from_slice(&q.to_le_bytes());
+            } else {
+                y[2 + i8] = (gi & 255) as u8;
+                y[66 + i8 / 4] |= ((gi >> 8) << (2 * (i8 % 4))) as u8;
+                y[34 + i8] = block_signs[k];
+            }
         }
         scales[ib] = scale;
         max_scale = fmax(max_scale, scale);
     }
     if max_scale == 0.0 {
+        if xs {
+            y[2..66].fill(0);
+        }
         return;
     }
     let d = max_scale / 31.0;
-    y[..2].copy_from_slice(&f16::from_f32(d * 0.9875).to_le_bytes());
+    y[..2].copy_from_slice(&f16::from_f32(if xs { d } else { d * 0.9875 }).to_le_bytes());
     let id = 1.0 / d;
+    let so = if xs { 66 } else { 74 };
     for ib in 0..16 {
         let q = nearest_int(0.5 * (id * scales[ib] - 1.0)).clamp(0, 15) as u8;
         if ib % 2 == 0 {
-            y[74 + ib / 2] = q;
+            y[so + ib / 2] = q;
         } else {
-            y[74 + ib / 2] |= q << 4;
+            y[so + ib / 2] |= q << 4;
         }
     }
 }
@@ -386,6 +453,11 @@ pub fn quantize_iq2s(xbl: &[f32], qw: Option<&[f32]>, out: &mut [u8]) {
 /// importance weights (`imatrix`, one per column). Multithreaded; deterministic.
 pub fn quantize_xxs(rows: &[f32], n_per_row: usize, imatrix: Option<&[f32]>) -> Vec<u8> {
     quantize_rows(rows, n_per_row, imatrix, IQ2XXS_BYTES, quantize_iq2xxs)
+}
+
+/// Quantize to IQ2_XS blocks (see [`quantize_xxs`]).
+pub fn quantize_xs(rows: &[f32], n_per_row: usize, imatrix: Option<&[f32]>) -> Vec<u8> {
+    quantize_rows(rows, n_per_row, imatrix, IQ2XS_BYTES, quantize_iq2xs)
 }
 
 /// Quantize to IQ2_S blocks (see [`quantize_xxs`]).

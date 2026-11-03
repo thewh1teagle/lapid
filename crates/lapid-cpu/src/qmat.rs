@@ -27,6 +27,7 @@ pub(crate) fn format_of(dtype: DType) -> Option<Format> {
         DType::Q6K => Some(Format::Q6K),
         DType::Mxfp4 => Some(Format::Mxfp4),
         DType::Iq2Xxs => Some(Format::Iq2Xxs),
+        DType::Iq2Xs => Some(Format::Iq2Xs),
         DType::Iq2S => Some(Format::Iq2S),
         DType::Iq3Xxs => Some(Format::Iq3Xxs),
         _ => None,

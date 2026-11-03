@@ -44,7 +44,7 @@ pub(crate) fn to_f32(bytes: &[u8], dtype: DType, shape: &[usize]) -> Result<Vec<
             .chunks_exact(4)
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect(),
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs => {
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2Xs | DType::Iq2S | DType::Iq3Xxs => {
             let Some(format) = dtype.quant_format() else {
                 bail!("unsupported_dtype", "no quant format for {}", dtype.name());
             };
@@ -77,7 +77,7 @@ pub(crate) fn to_i32(bytes: &[u8], dtype: DType, shape: &[usize]) -> Result<Vec<
         DType::F32 | DType::F16 | DType::BF16 => {
             Ok(to_f32(bytes, dtype, shape)?.into_iter().map(|x| x as i32).collect())
         }
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs => {
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2Xs | DType::Iq2S | DType::Iq3Xxs => {
             bail!("unsupported_dtype", "cannot read quantized {} tensor as i32", dtype.name())
         }
     }

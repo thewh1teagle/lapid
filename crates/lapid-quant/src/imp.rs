@@ -77,6 +77,7 @@ pub fn quantize(format: Format, data: &[f32], rows: usize, cols: usize) -> Vec<u
     if format.is_iquant() {
         let q = match format {
             Format::Iq2Xxs => crate::iq2_xxs::quantize(data, cols, None),
+            Format::Iq2Xs => crate::iq2_xs::quantize(data, cols, None),
             Format::Iq2S => crate::iq2_s::quantize(data, cols, None),
             _ => crate::iq3_xxs::quantize(data, cols, None),
         };
@@ -208,6 +209,7 @@ fn kfns(format: Format) -> Option<KFns> {
         Format::Q6K => Some((kquant::quantize_q6k, kquant::dequantize_q6k)),
         Format::Mxfp4 => Some((crate::mxfp4::quantize_block, crate::mxfp4::dequantize_block)),
         Format::Iq2Xxs => Some((|x, o| crate::iq2_xxs::quantize_block(x, None, o), crate::iq2_xxs::dequantize_block)),
+        Format::Iq2Xs => Some((|x, o| crate::iq2_xs::quantize_block(x, None, o), crate::iq2_xs::dequantize_block)),
         Format::Iq2S => Some((|x, o| crate::iq2_s::quantize_block(x, None, o), crate::iq2_s::dequantize_block)),
         Format::Iq3Xxs => Some((|x, o| crate::iq3_xxs::quantize_block(x, None, o), crate::iq3_xxs::dequantize_block)),
         Format::Int8 | Format::Int4 => None,

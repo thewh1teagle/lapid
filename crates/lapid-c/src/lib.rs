@@ -56,6 +56,8 @@ pub const LAPID_DTYPE_IQ2_XXS: LapidDType = 10;
 pub const LAPID_DTYPE_IQ2_S: LapidDType = 11;
 /// ggml IQ3_XXS super-blocks (3.06 bpw).
 pub const LAPID_DTYPE_IQ3_XXS: LapidDType = 12;
+/// ggml IQ2_XS super-blocks (2.31 bpw).
+pub const LAPID_DTYPE_IQ2_XS: LapidDType = 13;
 
 /// Unary op code for `lapid_unary` (`LAPID_UNARY_*`).
 pub type LapidUnaryOp = i32;
@@ -140,6 +142,7 @@ pub(crate) fn dtype_from_c(d: LapidDType) -> engine::Result<engine::DType> {
         LAPID_DTYPE_IQ2_XXS => DType::Iq2Xxs,
         LAPID_DTYPE_IQ2_S => DType::Iq2S,
         LAPID_DTYPE_IQ3_XXS => DType::Iq3Xxs,
+        LAPID_DTYPE_IQ2_XS => DType::Iq2Xs,
         other => return Err(engine::Error::new("invalid_argument", format!("unknown dtype code {other}"))),
     })
 }
@@ -160,5 +163,6 @@ pub(crate) fn dtype_to_c(d: engine::DType) -> LapidDType {
         DType::Iq2Xxs => LAPID_DTYPE_IQ2_XXS,
         DType::Iq2S => LAPID_DTYPE_IQ2_S,
         DType::Iq3Xxs => LAPID_DTYPE_IQ3_XXS,
+        DType::Iq2Xs => LAPID_DTYPE_IQ2_XS,
     }
 }

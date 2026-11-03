@@ -171,7 +171,7 @@ A UTF-8 JSON array (≤ 64 MiB, ≤ 1 000 000 entries) of:
 ```
 
 - `dtype`: `f32`, `f16`, `bf16`, `i32`, `int8`, `int4`, `q4_k`, `q5_k`, `q6_k`, `mxfp4`,
-  `iq2_xxs`, `iq2_s`, `iq3_xxs` (see docs/spec/quant.md; the k-quants and i-quants are ggml
+  `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs` (see docs/spec/quant.md; the k-quants and i-quants are ggml
   super-blocks of 256 elements, stored as in GGUF).
 - `block_size` (quantized dtypes only, omitted otherwise): elements per scale along the
   last axis. Writers always emit it; v1 supports only `32` — any other value is rejected

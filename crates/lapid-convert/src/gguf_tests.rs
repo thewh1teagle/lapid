@@ -214,9 +214,9 @@ fn mxfp4_kept_as_is() {
 
 #[test]
 fn iquants_kept_as_is() {
-    // 3 rows x 256 of ggml IQ2_XXS (16) / IQ3_XXS (18) / IQ2_S (22): stored unchanged.
+    // 3 rows x 256 of ggml IQ2_XXS (16) / IQ2_XS (17) / IQ3_XXS (18) / IQ2_S (22): stored unchanged.
     let x: Vec<f32> = (0..3 * 256).map(|i| ((i * 7919) % 1013) as f32 / 500.0 - 1.0).collect();
-    for (id, fmt, dt) in [(16, Format::Iq2Xxs, DType::Iq2Xxs), (18, Format::Iq3Xxs, DType::Iq3Xxs), (22, Format::Iq2S, DType::Iq2S)] {
+    for (id, fmt, dt) in [(16, Format::Iq2Xxs, DType::Iq2Xxs), (17, Format::Iq2Xs, DType::Iq2Xs), (18, Format::Iq3Xxs, DType::Iq3Xxs), (22, Format::Iq2S, DType::Iq2S)] {
         let l = lapid_quant::layout(fmt, 3, 256);
         let blocks = lapid_quant::quantize(fmt, &x, 3, 256)[..l.qs_bytes].to_vec();
         let mut g = GgufBuilder::default();

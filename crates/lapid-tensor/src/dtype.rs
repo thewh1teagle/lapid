@@ -43,6 +43,9 @@ pub enum DType {
     /// AoS as in GGUF, see lapid-quant). Same usage rules as the K formats.
     #[serde(rename = "iq2_xxs")]
     Iq2Xxs,
+    /// ggml IQ2_XS (256-element super-blocks of 74 bytes, 2.31 bpw).
+    #[serde(rename = "iq2_xs")]
+    Iq2Xs,
     /// ggml IQ2_S (256-element super-blocks of 82 bytes, 2.56 bpw).
     #[serde(rename = "iq2_s")]
     Iq2S,
@@ -57,13 +60,13 @@ impl DType {
     pub fn is_quant(self) -> bool {
         matches!(
             self,
-            DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs
+            DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2Xs | DType::Iq2S | DType::Iq3Xxs
         )
     }
 
-    /// The grid-codebook i-quants (IQ2_XXS, IQ2_S, IQ3_XXS).
+    /// The grid-codebook i-quants (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS).
     pub fn is_iquant(self) -> bool {
-        matches!(self, DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs)
+        matches!(self, DType::Iq2Xxs | DType::Iq2Xs | DType::Iq2S | DType::Iq3Xxs)
     }
 
     /// The lapid-quant format of a quantized dtype.
@@ -76,6 +79,7 @@ impl DType {
             DType::Q6K => lapid_quant::Format::Q6K,
             DType::Mxfp4 => lapid_quant::Format::Mxfp4,
             DType::Iq2Xxs => lapid_quant::Format::Iq2Xxs,
+            DType::Iq2Xs => lapid_quant::Format::Iq2Xs,
             DType::Iq2S => lapid_quant::Format::Iq2S,
             DType::Iq3Xxs => lapid_quant::Format::Iq3Xxs,
             _ => return None,
@@ -98,6 +102,7 @@ impl DType {
             | DType::Q6K
             | DType::Mxfp4
             | DType::Iq2Xxs
+            | DType::Iq2Xs
             | DType::Iq2S
             | DType::Iq3Xxs => panic!("size() on quantized dtype {self:?}"),
         }
@@ -117,6 +122,7 @@ impl DType {
             DType::Q6K => "q6_k",
             DType::Mxfp4 => "mxfp4",
             DType::Iq2Xxs => "iq2_xxs",
+            DType::Iq2Xs => "iq2_xs",
             DType::Iq2S => "iq2_s",
             DType::Iq3Xxs => "iq3_xxs",
         }
@@ -135,6 +141,7 @@ impl DType {
             "q6_k" => DType::Q6K,
             "mxfp4" => DType::Mxfp4,
             "iq2_xxs" => DType::Iq2Xxs,
+            "iq2_xs" => DType::Iq2Xs,
             "iq2_s" => DType::Iq2S,
             "iq3_xxs" => DType::Iq3Xxs,
             _ => return None,

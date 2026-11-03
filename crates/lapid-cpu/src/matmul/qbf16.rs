@@ -134,9 +134,9 @@ mod imp {
             return;
         }
         if b.fmt.is_iquant() {
-            // grid * sign in -62..62, a scale per 16 elements (IQ2_S) or 32, no min.
+            // grid * sign in -62..62, a scale per 16 elements (IQ2_S / IQ2_XS) or 32, no min.
             let mut g = [0i8; QK];
-            let per = if b.fmt == Format::Iq2S { 16 } else { 8 };
+            let per = if matches!(b.fmt, Format::Iq2S | Format::Iq2Xs) { 16 } else { 8 };
             for blk in 0..b.cols / QK {
                 let sc = crate::iquant::unpack_block(b.fmt, km.block(row, blk), &mut g);
                 q[blk * QK..(blk + 1) * QK].copy_from_slice(&g);
@@ -235,7 +235,7 @@ mod imp {
         let pair = kc * 8;
         let kg = k / GROUP;
         // Scale groups of 16 for q6_K, else 32; mins for q4_K / q5_K.
-        let sg = if matches!(b.fmt, Format::Q6K | Format::Iq2S) { 16 } else { GROUP };
+        let sg = if matches!(b.fmt, Format::Q6K | Format::Iq2S | Format::Iq2Xs) { 16 } else { GROUP };
         let ng = k / sg;
         let has_min = matches!(b.fmt, Format::Q4K | Format::Q5K);
         let apair = if split { 2 * pair } else { pair };

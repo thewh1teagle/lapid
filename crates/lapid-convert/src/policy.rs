@@ -57,6 +57,7 @@ impl Target {
             Target::Quant(Format::Q6K) => DType::Q6K,
             Target::Quant(Format::Mxfp4) => DType::Mxfp4,
             Target::Quant(Format::Iq2Xxs) => DType::Iq2Xxs,
+            Target::Quant(Format::Iq2Xs) => DType::Iq2Xs,
             Target::Quant(Format::Iq2S) => DType::Iq2S,
             Target::Quant(Format::Iq3Xxs) => DType::Iq3Xxs,
         }

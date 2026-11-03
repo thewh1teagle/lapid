@@ -4,6 +4,7 @@
 const INPUT: &[u8] = include_bytes!("fixtures/iquant/input.bin");
 const GRIDS: &[u8] = include_bytes!("fixtures/iquant/grids.bin");
 const IQ2_XXS: &[u8] = include_bytes!("fixtures/iquant/iq2_xxs.bin");
+const IQ2_XS: &[u8] = include_bytes!("fixtures/iquant/iq2_xs.bin");
 const IQ2_S: &[u8] = include_bytes!("fixtures/iquant/iq2_s.bin");
 const IQ3_XXS: &[u8] = include_bytes!("fixtures/iquant/iq3_xxs.bin");
 
@@ -57,13 +58,20 @@ fn grids_match_ggml() {
     assert_eq!(u64s(&GRIDS[..2048]), lapid_quant::IQ2XXS_GRID);
     assert_eq!(u64s(&GRIDS[2048..10240]), lapid_quant::IQ2S_GRID);
     assert_eq!(u32s(&GRIDS[10240..11264]), lapid_quant::IQ3XXS_GRID);
-    assert_eq!(&GRIDS[11264..], &lapid_quant::KSIGNS[..]);
+    assert_eq!(&GRIDS[11264..11392], &lapid_quant::KSIGNS[..]);
+    assert_eq!(u64s(&GRIDS[11392..]), lapid_quant::IQ2XS_GRID);
 }
 
 #[test]
 fn iq2_xxs_matches_ggml() {
     use lapid_quant::iq2_xxs as m;
     check("iq2_xxs", IQ2_XXS, m::BYTES, m::quantize, m::dequantize, &[true]);
+}
+
+#[test]
+fn iq2_xs_matches_ggml() {
+    use lapid_quant::iq2_xs as m;
+    check("iq2_xs", IQ2_XS, m::BYTES, m::quantize, m::dequantize, &[true]);
 }
 
 #[test]
@@ -82,7 +90,7 @@ fn iq3_xxs_matches_ggml() {
 fn layout_and_generic_quantize() {
     use lapid_quant::{Format, dequantize, layout, quantize};
     let inp = input();
-    for (f, bytes, bpw) in [(Format::Iq2Xxs, 66, 2.0625), (Format::Iq2S, 82, 2.5625), (Format::Iq3Xxs, 98, 3.0625)] {
+    for (f, bytes, bpw) in [(Format::Iq2Xxs, 66, 2.0625), (Format::Iq2Xs, 74, 2.3125), (Format::Iq2S, 82, 2.5625), (Format::Iq3Xxs, 98, 3.0625)] {
         assert_eq!(f.block_bytes(), bytes);
         assert_eq!(f.block_elems(), 256);
         assert_eq!(bytes as f64 * 8.0 / 256.0, bpw);
@@ -120,7 +128,12 @@ fn bench_quantize() {
         .collect();
     let w: Vec<f32> = (0..cols).map(|i| 0.5 + (i % 7) as f32).collect();
     type Q = fn(&[f32], usize, Option<&[f32]>) -> Vec<u8>;
-    let fmts: [(&str, Q); 3] = [("iq2_xxs", lapid_quant::iq2_xxs::quantize), ("iq2_s", lapid_quant::iq2_s::quantize), ("iq3_xxs", lapid_quant::iq3_xxs::quantize)];
+    let fmts: [(&str, Q); 4] = [
+        ("iq2_xxs", lapid_quant::iq2_xxs::quantize),
+        ("iq2_xs", lapid_quant::iq2_xs::quantize),
+        ("iq2_s", lapid_quant::iq2_s::quantize),
+        ("iq3_xxs", lapid_quant::iq3_xxs::quantize),
+    ];
     for (name, q) in fmts {
         let _ = q(&x[..cols * 8], cols, Some(&w)); // lattice init
         let t = std::time::Instant::now();

@@ -1,10 +1,12 @@
-//! ggml i-quants (IQ2_XXS / IQ2_S / IQ3_XXS, AoS exactly as in GGUF; see lapid-quant):
+//! ggml i-quants (IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS, AoS exactly as in GGUF; see lapid-quant):
 //! element dequantization (gather, scalar GEMM), the GEMV lane dot product over int8
 //! activations (`dp4a`, after the `q8_rows` pre-pass) and the tensor-core GEMM B-tile loader.
 //!
 //! Block layouts (bytes, 256 elements = 8 sub-blocks of 32 = 32 groups of 8):
 //! - IQ2_XXS (66): `d f16 | 8 x (idx u8[4] | aux u32)`; group l of sub-block ib: grid
 //!   `iq2xxs_grid[idx[l]]`, signs `ksigns[(aux >> 7l) & 127]`, x = d (0.5 + aux>>28) / 4 * g.
+//! - IQ2_XS (74): `d | qs u16[32] | scales[8]`; group j = 4ib + l: grid
+//!   `iq2xs_grid[qs[j] & 511]`, signs `ksigns[qs[j] >> 9]`, 4-bit scale per 16.
 //! - IQ2_S (82): `d | qs[32] | signs[32] | qh[8] | scales[8]`; group j = 4ib + l: grid
 //!   `iq2s_grid[qs[j] | ((qh[ib] >> 2l) & 3) << 8]`, signs `signs[j]`, 4-bit scale per 16.
 //! - IQ3_XXS (98): `d | idx u8[64] | aux u32[8]`; group l of ib: grids `iq3xxs_grid` of
@@ -17,7 +19,7 @@
 
 use std::fmt::Write;
 
-use lapid_quant::{IQ2S_GRID, IQ2XXS_GRID, IQ3XXS_GRID, KSIGNS};
+use lapid_quant::{IQ2S_GRID, IQ2XS_GRID, IQ2XXS_GRID, IQ3XXS_GRID, KSIGNS};
 use lapid_tensor::DType;
 
 use super::ptx::Gen;
@@ -51,6 +53,7 @@ pub(crate) fn tables(d: DType) -> String {
     let mut s = String::new();
     match d {
         DType::Iq2Xxs => table(&mut s, "iq_grid", "b64", 8, IQ2XXS_GRID.iter()),
+        DType::Iq2Xs => table(&mut s, "iq_grid", "b64", 8, IQ2XS_GRID.iter()),
         DType::Iq2S => table(&mut s, "iq_grid", "b64", 8, IQ2S_GRID.iter()),
         _ => table(&mut s, "iq_grid", "b32", 4, IQ3XXS_GRID.iter()),
     }
@@ -118,6 +121,7 @@ fn lookup(g: &mut Gen, tab: Tab, name: &str, idx: &str, size: usize, dst: &[&str
 fn table_bytes(d: DType) -> (usize, usize) {
     match d {
         DType::Iq2Xxs => (256 * 8, 128 * 8),
+        DType::Iq2Xs => (512 * 8, 128 * 8),
         DType::Iq2S => (1024 * 8, 256 * 8),
         _ => (256 * 4, 128 * 8),
     }
@@ -180,11 +184,12 @@ struct Group {
 
 /// Raw fields of one sub-block `ib` of the block at `base`.
 struct Sub {
-    /// IQ2_XXS: idx bytes; IQ2_S: idx low bytes; IQ3_XXS: idx bytes 0..4, 4..8.
+    /// IQ2_XXS: idx bytes; IQ2_S: idx low bytes; IQ3_XXS: idx bytes 0..4, 4..8; IQ2_XS:
+    /// qs u16 pairs 0..2, 2..4.
     idx: Vec<String>,
     /// IQ2_XXS / IQ3_XXS: aux (signs + scale); IQ2_S: sign bytes.
     aux: String,
-    /// IQ2_S: high index bits byte and the scales byte.
+    /// IQ2_S: high index bits byte; IQ2_S / IQ2_XS: the scales byte.
     qh: String,
     sc: String,
 }
@@ -199,6 +204,16 @@ fn load_sub(g: &mut Gen, d: DType, base: &str, ib: &str) -> Sub {
             let idx = ld32(g, &a, 2);
             let aux = ld32(g, &a, 6);
             Sub { idx: vec![idx], aux, qh: String::new(), sc: String::new() }
+        }
+        DType::Iq2Xs => {
+            g.op(format!("shl.b32 {o}, {ib}, 3"));
+            let a = offset(g, base, &o);
+            let i0 = ld32(g, &a, 2);
+            let i1 = ld32(g, &a, 6);
+            let a = offset(g, base, ib);
+            let sc = g.reg("u32");
+            g.op(format!("ld.global.nc.u8 {sc}, [{a}+66]"));
+            Sub { idx: vec![i0.clone(), i1], aux: i0, qh: String::new(), sc }
         }
         DType::Iq2S => {
             g.op(format!("shl.b32 {o}, {ib}, 2"));
@@ -244,11 +259,52 @@ impl L<'_> {
     }
 }
 
+/// Index word `l / 2` of a sub-block with two (IQ3_XXS, IQ2_XS).
+fn word(g: &mut Gen, s: &Sub, l: &L) -> String {
+    match l {
+        L::Imm(i) => s.idx[i / 2].clone(),
+        L::Reg(r) => {
+            let (w, p) = (g.reg("b32"), g.reg("pred"));
+            g.op(format!("setp.ge.u32 {p}, {r}, 2"));
+            g.op(format!("selp.b32 {w}, {}, {}, {p}", s.idx[1], s.idx[0]));
+            w
+        }
+    }
+}
+
+/// `16 (l % 2)`: the bit offset of group `l` in its index word (IQ3_XXS, IQ2_XS).
+fn odd16(g: &mut Gen, l: &L) -> String {
+    match l {
+        L::Imm(i) => (16 * (i % 2)).to_string(),
+        L::Reg(r) => {
+            let v = g.reg("u32");
+            g.op(format!("and.b32 {v}, {r}, 1"));
+            g.op(format!("shl.b32 {v}, {v}, 4"));
+            v
+        }
+    }
+}
+
+/// Formats with a scale per 16 elements (else per 32).
+fn scale16(d: DType) -> bool {
+    matches!(d, DType::Iq2S | DType::Iq2Xs)
+}
+
 /// Grid bytes and sign mask of group `l` (0..4) of a loaded sub-block.
 fn group(g: &mut Gen, d: DType, tab: Tab, s: &Sub, l: L) -> Group {
     let (gw, mw) = ([g.reg("b32"), g.reg("b32")], [g.reg("b32"), g.reg("b32")]);
     let (idx, si) = (g.reg("u32"), g.reg("u32"));
     match d {
+        DType::Iq2Xs => {
+            // qs[l]: u16 l % 2 of word l / 2: 9-bit index, 7 sign bits
+            let w = word(g, s, &l);
+            let lo = odd16(g, &l);
+            g.op(format!("bfe.u32 {idx}, {w}, {lo}, 9"));
+            let p = g.reg("u32");
+            g.op(format!("add.u32 {p}, {lo}, 9"));
+            g.op(format!("bfe.u32 {si}, {w}, {p}, 7"));
+            lookup(g, tab, "grid", &idx, 8, &[&gw[0], &gw[1]]);
+        }
         DType::Iq2Xxs | DType::Iq2S => {
             let p = l.lin(g, 8, 0);
             g.op(format!("bfe.u32 {idx}, {}, {p}, 8", s.idx[0]));
@@ -267,24 +323,8 @@ fn group(g: &mut Gen, d: DType, tab: Tab, s: &Sub, l: L) -> Group {
         }
         _ => {
             // idx bytes 2l, 2l + 1: word l / 2, bits 16 (l % 2) + 8h
-            let w = match &l {
-                L::Imm(i) => s.idx[i / 2].clone(),
-                L::Reg(r) => {
-                    let (w, p) = (g.reg("b32"), g.reg("pred"));
-                    g.op(format!("setp.ge.u32 {p}, {r}, 2"));
-                    g.op(format!("selp.b32 {w}, {}, {}, {p}", s.idx[1], s.idx[0]));
-                    w
-                }
-            };
-            let lo = match &l {
-                L::Imm(i) => (16 * (i % 2)).to_string(),
-                L::Reg(r) => {
-                    let v = g.reg("u32");
-                    g.op(format!("and.b32 {v}, {r}, 1"));
-                    g.op(format!("shl.b32 {v}, {v}, 4"));
-                    v
-                }
-            };
+            let w = word(g, s, &l);
+            let lo = odd16(g, &l);
             for (h, gh) in gw.iter().enumerate() {
                 let pos = g.reg("u32");
                 g.op(format!("add.u32 {pos}, {lo}, {}", 8 * h));
@@ -303,7 +343,7 @@ fn group(g: &mut Gen, d: DType, tab: Tab, s: &Sub, l: L) -> Group {
 fn half_scale(g: &mut Gen, dt: DType, s: &Sub, d: &str, h: usize) -> String {
     let v = g.reg("u32");
     match dt {
-        DType::Iq2S => g.op(format!("bfe.u32 {v}, {}, {}, 4", s.sc, 4 * h)),
+        DType::Iq2S | DType::Iq2Xs => g.op(format!("bfe.u32 {v}, {}, {}, 4", s.sc, 4 * h)),
         _ => g.op(format!("shr.u32 {v}, {}, 28", s.aux)),
     }
     sub_scale(g, d, &v, if dt == DType::Iq3Xxs { 0.5 } else { 0.25 })
@@ -353,7 +393,7 @@ pub(crate) fn gemv_dot(g: &mut Gen, d: DType, k: &str, out: &str) {
         halves.push(p);
     }
     let f = g.reg("f32");
-    if d == DType::Iq2S {
+    if scale16(d) {
         let (s0, s1) = (half_scale(g, d, &s, &df, 0), half_scale(g, d, &s, &df, 1));
         let f1 = g.reg("f32");
         g.op(format!("cvt.rn.f32.s32 {f}, {}", halves[0]));
@@ -393,7 +433,7 @@ pub(crate) fn load_elem(g: &mut Gen, d: DType, ptr: &str, e: &str, dst: &str) {
     g.op(format!("bfe.u32 {m}, {mb}, {sh}, 1"));
     // scale of the element's half (l / 2)
     let sc = g.reg("f32");
-    if d == DType::Iq2S {
+    if scale16(d) {
         let (s0, s1) = (half_scale(g, d, &s, &df, 0), half_scale(g, d, &s, &df, 1));
         g.op(format!("setp.ge.u32 {p}, {l}, 2"));
         g.op(format!("selp.f32 {sc}, {s1}, {s0}, {p}"));
@@ -434,6 +474,8 @@ pub(crate) fn mma_b_parts(d: DType, lds: usize) -> (String, String, String) {
     g.op(format!("mov.b32 %iqa, {}", s.aux));
     if d == DType::Iq2S {
         g.op(format!("mov.b32 %iqh, {}", s.qh));
+    }
+    if scale16(d) {
         g.op(format!("mov.b32 %iqs, {}", s.sc));
     }
     let df = d_f32(&mut g, &base);
@@ -443,7 +485,7 @@ pub(crate) fn mma_b_parts(d: DType, lds: usize) -> (String, String, String) {
     // ---- store
     let mut g = Gen::new();
     let s = Sub {
-        idx: (0..if d == DType::Iq3Xxs { 2 } else { 1 }).map(|i| format!("%iqi{i}")).collect(),
+        idx: (0..if matches!(d, DType::Iq3Xxs | DType::Iq2Xs) { 2 } else { 1 }).map(|i| format!("%iqi{i}")).collect(),
         aux: "%iqa".into(),
         qh: "%iqh".into(),
         sc: "%iqs".into(),

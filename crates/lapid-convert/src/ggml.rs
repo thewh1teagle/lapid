@@ -131,6 +131,7 @@ impl GgmlType {
             GgmlType::Other(MXFP4) => (32, 17),
             GgmlType::Other(IQ2_XXS) => (QK_K, lapid_quant::iq2_xxs::BYTES),
             GgmlType::Other(IQ2_S) => (QK_K, lapid_quant::iq2_s::BYTES),
+            GgmlType::Other(IQ2_XS) => (QK_K, lapid_quant::iq2_xs::BYTES),
             GgmlType::Other(IQ3_XXS) => (QK_K, lapid_quant::iq3_xxs::BYTES),
             GgmlType::Other(_) => return None,
         })
@@ -139,7 +140,7 @@ impl GgmlType {
     /// Storage bytes of `n` elements. Errors: "unsupported_gguf_type", "format" (n not a
     /// whole number of blocks).
     /// The lapid quant format storing this type without conversion: Q8_0 → Int8 and
-    /// Q4_0 → Int4 (lossless repack), Q4_K/Q5_K/Q6_K, MXFP4 and IQ2_XXS/IQ2_S/IQ3_XXS → the
+    /// Q4_0 → Int4 (lossless repack), Q4_K/Q5_K/Q6_K, MXFP4 and IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS → the
     /// same format (as-is).
     pub fn lapid_format(self) -> Option<lapid_quant::Format> {
         use lapid_quant::Format;
@@ -152,6 +153,7 @@ impl GgmlType {
             GgmlType::Other(MXFP4) => Format::Mxfp4,
             GgmlType::Other(IQ2_XXS) => Format::Iq2Xxs,
             GgmlType::Other(IQ2_S) => Format::Iq2S,
+            GgmlType::Other(IQ2_XS) => Format::Iq2Xs,
             GgmlType::Other(IQ3_XXS) => Format::Iq3Xxs,
             _ => return None,
         })
@@ -221,9 +223,10 @@ pub fn dequantize(t: GgmlType, data: &[u8], n: usize) -> Result<Vec<f32>> {
         GgmlType::Other(27) => out.extend(data.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or([0; 8])) as f32)),
         GgmlType::Other(28) => out.extend(data.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap_or([0; 8])) as f32)),
         GgmlType::Other(MXFP4) => blocks.for_each(|b| mxfp4(b, &mut out)),
-        GgmlType::Other(IQ2_XXS | IQ2_S | IQ3_XXS) => {
+        GgmlType::Other(IQ2_XXS | IQ2_XS | IQ2_S | IQ3_XXS) => {
             let f = match t.id() {
                 IQ2_XXS => lapid_quant::iq2_xxs::dequantize_block,
+                IQ2_XS => lapid_quant::iq2_xs::dequantize_block,
                 IQ2_S => lapid_quant::iq2_s::dequantize_block,
                 _ => lapid_quant::iq3_xxs::dequantize_block,
             };
@@ -242,6 +245,7 @@ pub fn dequantize(t: GgmlType, data: &[u8], n: usize) -> Result<Vec<f32>> {
 const MXFP4: u32 = 39;
 /// ggml type ids of the supported i-quants.
 const IQ2_XXS: u32 = 16;
+const IQ2_XS: u32 = 17;
 const IQ3_XXS: u32 = 18;
 const IQ2_S: u32 = 22;
 

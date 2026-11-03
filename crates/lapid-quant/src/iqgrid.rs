@@ -176,6 +176,12 @@ pub(crate) fn lattice_iq2xxs() -> &'static Lattice<8> {
     L.get_or_init(|| Lattice::new(&KGRID_2BIT_256, 2, 2))
 }
 
+/// IQ2_XS lattice (512 points, 2 nearest distances).
+pub(crate) fn lattice_iq2xs() -> &'static Lattice<8> {
+    static L: OnceLock<Lattice<8>> = OnceLock::new();
+    L.get_or_init(|| Lattice::new(&KGRID_2BIT_512, 2, 2))
+}
+
 /// IQ2_S lattice (1024 points, nearest distance only).
 pub(crate) fn lattice_iq2s() -> &'static Lattice<8> {
     static L: OnceLock<Lattice<8>> = OnceLock::new();

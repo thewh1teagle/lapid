@@ -93,7 +93,7 @@ fn quantized_large_m_matches_dequantized_f32() {
 fn kquant_matmul_matches_dequantized_f32() {
     let bes = [CpuBackend::with_threads(4), CpuBackend::build(1, Isa::default())];
     let mut seed = 50;
-    for fmt in [Format::Q4K, Format::Q5K, Format::Q6K, Format::Mxfp4, Format::Iq2Xxs, Format::Iq2S, Format::Iq3Xxs] {
+    for fmt in [Format::Q4K, Format::Q5K, Format::Q6K, Format::Mxfp4, Format::Iq2Xxs, Format::Iq2Xs, Format::Iq2S, Format::Iq3Xxs] {
         let dt = super::kbench_tests::dtype(fmt);
         let mut shapes = vec![(1, 37, 512, 0), (3, 20, 256, 4), (6, 9, 256, 0), (20, 45, 256, 3), (130, 70, 512, 0), (33, 300, 1024, 0)];
         if fmt == Format::Mxfp4 {

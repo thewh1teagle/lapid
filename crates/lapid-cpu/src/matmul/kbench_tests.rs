@@ -78,6 +78,7 @@ pub(crate) fn dtype(fmt: Format) -> DType {
         Format::Q6K => DType::Q6K,
         Format::Mxfp4 => DType::Mxfp4,
         Format::Iq2Xxs => DType::Iq2Xxs,
+        Format::Iq2Xs => DType::Iq2Xs,
         Format::Iq2S => DType::Iq2S,
         Format::Iq3Xxs => DType::Iq3Xxs,
     }
@@ -141,7 +142,7 @@ fn kbench_gemv() {
     let mut shapes: Vec<(usize, usize, Format)> = SHAPES.to_vec();
     shapes.extend([(3072, 1024, Format::Q5K), (3072, 1024, Format::Int8), (3072, 1024, Format::Int4), (3072, 1024, Format::Mxfp4), (2048, 4096, Format::Q4K), (2048, 4096, Format::Mxfp4), (64, 1024, Format::Q4K), (256, 1024, Format::Q4K)]);
     // DeepSeek V4.1 routed expert shapes: gate/up and down, MXFP4 vs the i-quants
-    for fmt in [Format::Mxfp4, Format::Iq2Xxs, Format::Iq2S, Format::Iq3Xxs] {
+    for fmt in [Format::Mxfp4, Format::Iq2Xxs, Format::Iq2Xs, Format::Iq2S, Format::Iq3Xxs] {
         shapes.extend([(2304, 5120, fmt), (5120, 2304, fmt)]);
     }
     // KB_FILTER: only shapes whose "<format> <n>x<k>" label contains it

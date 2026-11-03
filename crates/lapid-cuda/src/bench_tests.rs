@@ -326,7 +326,7 @@ fn cases() -> Vec<Case> {
     }
     // DeepSeek V4.1 routed experts at low bit widths: MXFP4 vs the i-quants (decode GEMV rows
     // over 6 of 32 experts, plain decode GEMVs, prefill routed GEMM)
-    for w in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2S, DType::Iq3Xxs] {
+    for w in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2Xs, DType::Iq2S, DType::Iq3Xxs] {
         for (n, k) in [(2304, 5120), (5120, 2304)] {
             let mut c = moe_case(1, 6, 32, n, k, w);
             c.name = format!("ds41 {}", c.name);

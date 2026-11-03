@@ -1,4 +1,4 @@
-//! i-quant (IQ2_XXS / IQ2_S / IQ3_XXS) matmul (GEMV over int8 activations, tensor-core
+//! i-quant (IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS) matmul (GEMV over int8 activations, tensor-core
 //! GEMM, scalar GEMM), gather and MatMulId tests on CUDA device 0 against f64 references over
 //! `lapid_quant`'s reference dequantization.
 
@@ -10,7 +10,7 @@ use lapid_tensor::{DType, DeviceData};
 use crate::CudaBackend;
 use crate::tests::{bytes, check, cuda, floats, mat_spec, rnd, run_on};
 
-const IQ: [DType; 3] = [DType::Iq2Xxs, DType::Iq2S, DType::Iq3Xxs];
+const IQ: [DType; 4] = [DType::Iq2Xxs, DType::Iq2Xs, DType::Iq2S, DType::Iq3Xxs];
 
 /// Random blocks: random grid indices, signs and sub-scales, f16 `d` in [0.002, 0.02).
 fn random(d: DType, rows: usize, cols: usize, seed: u64) -> Vec<u8> {

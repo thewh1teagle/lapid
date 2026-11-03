@@ -1,15 +1,16 @@
-//! ggml i-quant weights (IQ2_XXS, IQ2_S, IQ3_XXS; `lapid_quant::iq*`, 256-element AoS
+//! ggml i-quant weights (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS; `lapid_quant::iq*`, 256-element AoS
 //! super-blocks) x int8 activations quantized per 32-group (`KA`, the K-quant activation
 //! layout; no min term, so the `bs` sums are unused).
 //!
 //! Every format is `w = sc[h] * g * sign` with grid bytes `g` (IQ2: 8, 25, 43; IQ3: 4..62,
 //! exact in i8) and a scale per 16 elements `h` (IQ2_S; the 32-group formats repeat theirs),
-//! so `dot(w, a) = sum_h sc[h] * da[h / 2] * dot_i32(g * sign, qa)`.
+//! so `dot(w, a) = sum_h sc[h] * da[h / 2] * dot_i32(g * sign, qa)` (IQ2_XS too has a scale
+//! per 16).
 //!
 //! Kernels share the `kquant::KTile*` contract: aarch64 `sdot` (grid rows loaded by index,
 //! signs applied with `vtst` masks) and a portable scalar reference.
 
-use lapid_quant::{Format, IQ2S_GRID, IQ2XXS_GRID, IQ3XXS_GRID, KSIGNS};
+use lapid_quant::{Format, IQ2S_GRID, IQ2XS_GRID, IQ2XXS_GRID, IQ3XXS_GRID, KSIGNS};
 
 use crate::kquant::{KA, KMat, QK};
 use crate::typed::f16_bits_to_f32;
@@ -28,6 +29,7 @@ fn u32_at(b: &[u8], o: usize) -> u32 {
 pub(crate) fn dequant_block(fmt: Format, b: &[u8], out: &mut [f32]) {
     match fmt {
         Format::Iq2Xxs => lapid_quant::iq2_xxs::dequantize_block(b, out),
+        Format::Iq2Xs => lapid_quant::iq2_xs::dequantize_block(b, out),
         Format::Iq2S => lapid_quant::iq2_s::dequantize_block(b, out),
         _ => lapid_quant::iq3_xxs::dequantize_block(b, out),
     }
@@ -41,6 +43,10 @@ fn group8(fmt: Format, b: &[u8], j: usize) -> (u64, u8) {
         Format::Iq2Xxs => {
             let a1 = u32_at(b, 6 + 8 * ib);
             (IQ2XXS_GRID[usize::from(b[2 + 8 * ib + l])], KSIGNS[((a1 >> (7 * l)) & 127) as usize])
+        }
+        Format::Iq2Xs => {
+            let q = u16::from_le_bytes([b[2 + 2 * j], b[3 + 2 * j]]);
+            (IQ2XS_GRID[usize::from(q & 511)], KSIGNS[usize::from(q >> 9)])
         }
         Format::Iq2S => {
             let idx = usize::from(b[2 + j]) | ((usize::from(b[66 + ib]) << (8 - 2 * l)) & 0x300);
@@ -66,8 +72,8 @@ pub(crate) fn half_scales(fmt: Format, b: &[u8]) -> [f32; 16] {
                 let x = d * (0.5 + (u32_at(b, 6 + 8 * ib) >> 28) as f32) * 0.25;
                 [x, x]
             }
-            Format::Iq2S => {
-                let sc = b[74 + ib];
+            Format::Iq2Xs | Format::Iq2S => {
+                let sc = b[if fmt == Format::Iq2Xs { 66 } else { 74 } + ib];
                 [d * (0.5 + (sc & 15) as f32) * 0.25, d * (0.5 + (sc >> 4) as f32) * 0.25]
             }
             _ => {
@@ -166,12 +172,13 @@ pub(crate) unsafe fn tile_sdot<const R: usize>(a: &KA, rows: [usize; R], b: &KMa
         match b.fmt {
             Format::Iq2Xxs => tile_sdot_f::<R, 0>(a, rows, b, cols),
             Format::Iq2S => tile_sdot_f::<R, 1>(a, rows, b, cols),
+            Format::Iq2Xs => tile_sdot_f::<R, 3>(a, rows, b, cols),
             _ => tile_sdot_f::<R, 2>(a, rows, b, cols),
         }
     }
 }
 
-/// `tile_sdot` for format `F` (0 IQ2_XXS, 1 IQ2_S, 2 IQ3_XXS): each 32-element sub-block is
+/// `tile_sdot` for format `F` (0 IQ2_XXS, 1 IQ2_S, 2 IQ3_XXS, 3 IQ2_XS): each 32-element sub-block is
 /// decoded once into two vectors of signed weights `(g ^ m) - m` (grid rows by index, sign
 /// byte masks from `MASK7` / `MASK8`) and two half scales, then dotted with every row.
 ///
@@ -232,6 +239,15 @@ unsafe fn tile_sdot_f<const R: usize, const F: u8>(a: &KA, rows: [usize; R], b: 
                             let x = [d * (0.5 + (s & 15) as f32) * 0.25, d * (0.5 + (s >> 4) as f32) * 0.25];
                             ([signed([gi(0), gi(1)], [mi(0), mi(1)]), signed([gi(2), gi(3)], [mi(2), mi(3)])], x)
                         }
+                        3 => {
+                            let q = p.add(2 + 8 * ib);
+                            let s = *p.add(66 + ib);
+                            let qv = |l: usize| u16::from_le(std::ptr::read_unaligned(q.add(2 * l).cast::<u16>()));
+                            let gi = |l: usize| g2(&IQ2XS_GRID, usize::from(qv(l) & 511));
+                            let mi = |l: usize| *MASK7.get_unchecked(usize::from(qv(l) >> 9));
+                            let x = [d * (0.5 + (s & 15) as f32) * 0.25, d * (0.5 + (s >> 4) as f32) * 0.25];
+                            ([signed([gi(0), gi(1)], [mi(0), mi(1)]), signed([gi(2), gi(3)], [mi(2), mi(3)])], x)
+                        }
                         _ => {
                             let q = p.add(2 + 8 * ib);
                             let aux = u32_at(p.add(66 + 4 * ib));
@@ -278,7 +294,7 @@ mod tests {
             .collect()
     }
 
-    const FMTS: [Format; 3] = [Format::Iq2Xxs, Format::Iq2S, Format::Iq3Xxs];
+    const FMTS: [Format; 4] = [Format::Iq2Xxs, Format::Iq2Xs, Format::Iq2S, Format::Iq3Xxs];
 
     #[test]
     fn unpack_matches_reference_dequant() {

@@ -1,7 +1,7 @@
 //! The kernel suite of `lapid kernels dump` / `lapid bench kernels`: small graphs built from
 //! lapid primitives at typical transformer shapes (decode GEMV, prefill GEMM in fp16 / int8 /
 //! int4, attention, softmax, layer norm, fused elementwise, and large-MoE expert shapes in
-//! the block formats mxfp4 / iq2_xxs / iq2_s / iq3_xxs). Generic: no model code.
+//! the block formats mxfp4 / iq2_xxs / iq2_xs / iq2_s / iq3_xxs). Generic: no model code.
 
 use std::sync::Arc;
 
@@ -147,7 +147,7 @@ pub fn cases(filter: Option<&str>) -> Result<Vec<Case>> {
     out.push(rows_case("gelu-mul", 512, 4096, |x| x.gelu()?.mul(x))?);
     // DeepSeek-V4.1-sized routed experts (hidden 5120, expert ffn 2304, top-6 of a 32-slot
     // stack), the block formats a large MoE is stored in
-    for dtype in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2S, DType::Iq3Xxs] {
+    for dtype in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2Xs, DType::Iq2S, DType::Iq3Xxs] {
         for (n, k) in [(2304, 5120), (5120, 2304)] {
             out.push(expert("expert-gemv", 1, 0, n, k, dtype)?);
             out.push(expert("expert-moe-r6-e32", 6, 32, n, k, dtype)?);
