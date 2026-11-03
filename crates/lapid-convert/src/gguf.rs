@@ -380,4 +380,4 @@ pub fn parse(b: &[u8]) -> Result<Parsed> {
 
 #[cfg(test)]
 #[path = "gguf_tests.rs"]
-mod tests;
+pub(crate) mod tests;

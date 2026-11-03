@@ -60,6 +60,14 @@ pub enum Emit {
     Rows(Vec<(String, Vec<usize>, Vec<usize>)>),
     /// Write it as stored under another name (when the name depends on the config).
     Rename(String),
+    /// Write the stored bytes of this source tensor unchanged as the blob `name` (streamed
+    /// from the source mapping, never copied whole into memory).
+    Blob { name: String, media_type: &'static str },
+    /// Write tensor `name` shaped `[parts.len(), ..part shape]` from the listed source
+    /// tensors (our names, all the same shape) back to back. Kept as stored when they share
+    /// a quantized storage the output can hold (MXFP4 from official FP4 or GGUF type 39,
+    /// ggml K / legacy quants the writer keeps), else via f32 and the dtype policy.
+    Stack { name: String, parts: Vec<String> },
 }
 
 /// Read access to the source tensors by our names (for transforms that combine tensors,
@@ -392,6 +400,8 @@ impl ConvertSpec {
                 Emit::Rows(parts) => self.write_rows(&mut w, srcs, n, &parts)?,
                 Emit::Keep => self.write_one(&mut w, srcs, n, n)?,
                 Emit::Rename(to) => self.write_one(&mut w, srcs, n, &to)?,
+                Emit::Blob { name, media_type } => self.write_blob(&mut w, srcs, n, &name, media_type)?,
+                Emit::Stack { name, parts } => self.write_stack(&mut w, srcs, &name, &parts)?,
             }
         }
         w.finish(&expected)
@@ -420,6 +430,56 @@ impl ConvertSpec {
             }
         }
         Ok(())
+    }
+
+    /// Stored bytes of source `name` as blob `out`.
+    fn write_blob(&self, w: &mut ModelWriter, srcs: &Sources<'_>, name: &str, out: &str, media_type: &str) -> Result<()> {
+        let src = srcs.map.get(name).ok_or_else(|| Error::new("internal", format!("no source for {name:?}")))?;
+        let bytes = match src {
+            Src::Hf(i, n) => srcs.shards[*i].bytes(n)?,
+            Src::Gguf(i) => {
+                let (g, t) = srcs.ggml(*i)?;
+                g.tensor_data(t)
+            }
+        };
+        w.add_blob(out, media_type, bytes)
+    }
+
+    /// Source tensors `parts` stacked along a new first axis as `out`.
+    fn write_stack(&self, w: &mut ModelWriter, srcs: &Sources<'_>, out: &str, parts: &[String]) -> Result<()> {
+        let mut inner: Option<Vec<usize>> = None;
+        for p in parts {
+            let s = srcs.shape(p).ok_or_else(|| Error::new("missing_tensor", format!("{out}: stack part {p:?} missing")))?;
+            if inner.as_ref().is_some_and(|i| *i != s) {
+                bail!("shape_mismatch", "{out}: stack parts disagree in shape ({inner:?} vs {s:?})");
+            }
+            inner = Some(s);
+        }
+        let Some(inner) = inner else { bail!("invalid_argument", "{out}: empty stack") };
+        let shape = [vec![parts.len()], inner].concat();
+        // GGUF parts of one ggml type: concatenated blocks, written as one ggml tensor.
+        let ggml: Option<Vec<(&GgufFile, &GgufTensor)>> =
+            parts.iter().map(|p| match srcs.map.get(p) { Some(Src::Gguf(i)) => srcs.ggml(*i).ok(), _ => None }).collect();
+        if let Some(gs) = ggml
+            && gs.iter().all(|(_, t)| t.ggml_type == gs[0].1.ggml_type)
+        {
+            let mut data = Vec::new();
+            for (p, (g, t)) in parts.iter().zip(&gs) {
+                match self.hooks.row_order(p, &t.shape, srcs.cfg, srcs.kind) {
+                    Some(o) => data.extend(gather_rows(g.tensor_data(t), &o)?),
+                    None => data.extend_from_slice(g.tensor_data(t)),
+                }
+            }
+            let mut t = gs[0].1.clone();
+            t.shape = shape.clone();
+            t.nbytes = data.len() as u64;
+            return self.write_ggml(w, out, &t, &data, &shape);
+        }
+        let mut data = Vec::with_capacity(shape.iter().product());
+        for p in parts {
+            data.extend(srcs.f32(p)?);
+        }
+        w.add_f32(out, &shape, &data)
     }
 
     /// Raw ggml data of `t` as `name` (see [`ConvertHooks::gguf_keep_float`]).
@@ -478,33 +538,5 @@ pub fn sibling_mmproj(model: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Hooks;
-    impl ConvertHooks for Hooks {
-        fn expected(&self, _cfg: &Value) -> Result<Vec<String>> {
-            Ok(vec!["a.weight".into()])
-        }
-    }
-
-    static SPEC: ConvertSpec = ConvertSpec {
-        architecture: "toy",
-        license: "mit",
-        hf_model_types: &["toy"],
-        gguf_architectures: &["toy"],
-        hf_names: &[Rule::drop("lm_head.weight")],
-        gguf_names: &[],
-        roles: &[RoleRule::new("embed.weight", Role::LinearInt8)],
-        text_assets: false,
-        hooks: &Hooks,
-    };
-
-    #[test]
-    fn spec_basics() {
-        assert!(SPEC.accepts_model_type("toy"));
-        assert_eq!(SPEC.role("embed.weight", &[4, 4]), Role::LinearInt8);
-        assert_eq!((SPEC.role_arc())("x.weight", &[4, 4]), Role::Linear);
-        assert!(SPEC.convert_hf("/nonexistent/dir/x", OutDType::Int8, Path::new("/tmp/x.lapid")).is_err());
-    }
-}
+#[path = "engine_tests.rs"]
+mod tests;
