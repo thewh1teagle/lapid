@@ -179,8 +179,12 @@ impl Dspark {
         if from >= pos {
             return Ok(ring);
         }
-        let f = Tensor::cat(&ds.feats.iter().collect::<Vec<_>>(), 0)?.slice(0, from - first, r)?;
-        let main_x = self.main_norm.forward(&self.main_proj.forward(&f)?)?.cast(DType::F32)?;
+        let f = Tensor::cat(&ds.feats.iter().collect::<Vec<_>>(), 0)?.slice(0, from - first, r)?.cast(DType::F32)?;
+        // Target features carry massive activations (~3e5 on some tokens), beyond f16 in
+        // batched matmuls. main_norm(main_proj(f)) does not depend on each row's scale, so
+        // project rows scaled to a max of 1.
+        let peak = f.unary(lapid::UnaryOp::Abs)?.reduce(lapid::ReduceOp::Max, 1, true)?.add_scalar(1e-30)?;
+        let main_x = self.main_norm.forward(&self.main_proj.forward(&f.div(&peak)?)?)?.cast(DType::F32)?;
         let positions: Vec<usize> = (from..pos).collect();
         for (s, stage) in self.stages.iter().enumerate() {
             let k = stage.attn.main_kv(&main_x, &positions)?;

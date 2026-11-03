@@ -24,7 +24,7 @@ const ROUTE: &str = include_str!("../kernels/moe_route.ptx");
 /// slots as the experts (e.g. ~4500 slots of DeepSeek V4.1 experts on a 128 GB GB10).
 const MAX_E: usize = 6144;
 /// Most (token, slot) rows served by the GEMV variant regardless of t.
-const GEMV_MAX_ROWS: usize = 32;
+const GEMV_MAX_ROWS: usize = 96;
 
 pub(super) fn plan(spec: &Arc<MatMulIdSpec>, d: &MatMulIdDims, caps: &Caps) -> Result<Plan> {
     check_plain(spec.x_dtype, "matmul_id x")?;

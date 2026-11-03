@@ -93,7 +93,7 @@ impl Deepseek41Model {
         // (~85% of the misses of a 600-token chunk, ~87% of the reads used), and disk time is
         // what a chunk waits for. Decode guesses are right for about half the misses but cost
         // an extra router and sync per layer and compete with the reads waited for: slower.
-        let speculate = cache.speculative() && n > 1;
+        let speculate = cache.speculative() && n > super::REWIND_MAX;
         let mut feats: Vec<Tensor> = Vec::new();
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some((p, host_ids)) = pending.take() {

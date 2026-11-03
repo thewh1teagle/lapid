@@ -45,7 +45,7 @@ pub static CONVERT: ConvertSpec = ConvertSpec {
 pub static CONVERT_DSPARK: ConvertSpec = ConvertSpec {
     architecture: "deepseek41",
     license: "mit",
-    hf_model_types: &[],
+    hf_model_types: &["deepseek_v41"],
     gguf_architectures: &[],
     hf_names: HF_NAMES,
     gguf_names: &[],

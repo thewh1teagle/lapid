@@ -130,7 +130,7 @@ pub struct LoadArgs {
     /// Draft tokens per step at most (clamped to the draft's block size).
     #[arg(long = "spec-draft-n-max", visible_alias = "draft-max", value_name = "N")]
     pub spec_draft_n_max: Option<usize>,
-    /// Cut the draft at the first position whose confidence is below P (0 = off).
+    /// Cut the draft at the first position whose confidence is below P (default 0.8; 0 = off).
     #[arg(long = "spec-draft-p-min", visible_alias = "draft-p-min", value_name = "P")]
     pub spec_draft_p_min: Option<f32>,
     /// Draft head weights (`lapid convert --dspark`) when the model file has none.

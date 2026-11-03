@@ -34,6 +34,9 @@ pub struct SpecConfig {
     /// Draft tokens per step at most (clamped to the head's block size).
     pub n_max: usize,
     /// Stop the draft at the first position whose confidence is below this (0 = off).
+    /// Default 0.8: on DeepSeek V4.1 with streamed experts every verified token costs
+    /// expert reads, so unsure drafts are not worth verifying (code: 100% of the kept
+    /// drafts accepted, 5.1 tokens/step; prose 83%, 1.6).
     pub p_min: f32,
     /// Draft head weights in a separate `.lapid` (`lapid convert --dspark`), when the
     /// model file has none.
@@ -42,7 +45,7 @@ pub struct SpecConfig {
 
 impl Default for SpecConfig {
     fn default() -> Self {
-        SpecConfig { n_max: 5, p_min: 0.0, draft_model: None }
+        SpecConfig { n_max: 5, p_min: 0.8, draft_model: None }
     }
 }
 
@@ -67,6 +70,13 @@ pub struct SpecStats {
     pub accepted: usize,
     /// Tokens emitted by the verify steps.
     pub emitted: usize,
+    /// Wall time drafting, verifying and rewinding.
+    #[serde(skip)]
+    pub draft_time: std::time::Duration,
+    #[serde(skip)]
+    pub verify_time: std::time::Duration,
+    #[serde(skip)]
+    pub rewind_time: std::time::Duration,
 }
 
 impl SpecStats {
@@ -208,6 +218,36 @@ pub(crate) struct SpecGen<S> {
     logged: bool,
 }
 
+impl<S> SpecGen<S> {
+    fn log(&mut self) {
+        if self.logged || self.stats.steps == 0 {
+            return;
+        }
+        self.logged = true;
+        if std::env::var("LAPID_SPEC_STATS").is_ok_and(|v| !v.is_empty() && v != "0") {
+            let s = self.stats;
+            lapid::log_line(&format!(
+                "[lapid] spec: {} steps, {}/{} drafts accepted ({:.1}%), {:.2} tokens/step; ms/step draft {:.1} verify {:.1} rewind {:.1}",
+                s.steps,
+                s.accepted,
+                s.drafted,
+                100.0 * s.acceptance(),
+                s.tokens_per_step(),
+                s.draft_time.as_secs_f64() * 1e3 / s.steps as f64,
+                s.verify_time.as_secs_f64() * 1e3 / s.steps as f64,
+                s.rewind_time.as_secs_f64() * 1e3 / s.steps as f64
+            ));
+        }
+    }
+}
+
+impl<S> Drop for SpecGen<S> {
+    /// Generations usually end at a stop token, before the stream is drained.
+    fn drop(&mut self) {
+        self.log();
+    }
+}
+
 impl<S: SpecModel> SpecGen<S> {
     /// After `prompt` (its first `cached` tokens already in the state), up to `max_new` tokens.
     pub fn new(model: S, prompt: &[u32], cached: usize, sampler: Sampler, max_new: usize, stop: &[u32], n_max: usize) -> SpecGen<S> {
@@ -255,12 +295,16 @@ impl<S: SpecModel> SpecGen<S> {
         let Some(&anchor) = self.tokens.last() else { return Ok(()) };
         // Every accepted draft and the token after them must fit the budget.
         let n = self.n_max.min(self.remaining.saturating_sub(1));
+        let t0 = std::time::Instant::now();
         let mut drafts = if n > 0 { self.model.draft(anchor, n)? } else { Vec::new() };
         drafts.truncate(n);
+        self.stats.draft_time += t0.elapsed();
         let mut ids = Vec::with_capacity(drafts.len() + 1);
         ids.push(anchor);
         ids.extend_from_slice(&drafts);
+        let t0 = std::time::Instant::now();
         let rows = self.model.verify(&ids)?;
+        self.stats.verify_time += t0.elapsed();
         let mut history = self.tokens.clone();
         let out = accept(&mut self.sampler, &rows, &drafts, &mut history);
         self.stats.steps += 1;
@@ -271,27 +315,11 @@ impl<S: SpecModel> SpecGen<S> {
         // Fed: the anchor and every draft; kept: the anchor and the emitted tokens but the
         // last (the next anchor).
         if n < ids.len() {
+            let t0 = std::time::Instant::now();
             self.model.rewind(n)?;
+            self.stats.rewind_time += t0.elapsed();
         }
         Ok(())
-    }
-
-    fn log(&mut self) {
-        if self.logged || self.stats.steps == 0 {
-            return;
-        }
-        self.logged = true;
-        if std::env::var("LAPID_SPEC_STATS").is_ok_and(|v| !v.is_empty() && v != "0") {
-            let s = self.stats;
-            lapid::log_line(&format!(
-                "[lapid] spec: {} steps, {}/{} drafts accepted ({:.1}%), {:.2} tokens/step",
-                s.steps,
-                s.accepted,
-                s.drafted,
-                100.0 * s.acceptance(),
-                s.tokens_per_step()
-            ));
-        }
     }
 
     pub fn next_token(&mut self) -> Option<Result<u32>> {
