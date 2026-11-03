@@ -153,6 +153,29 @@ impl WriterState {
         Ok(())
     }
 
+    /// Write `bytes`, updating `hashers`, chunk by chunk; on native targets the hashing of a
+    /// chunk runs on other threads while it is written.
+    fn hash_and_write(&mut self, bytes: &[u8], hashers: &mut [&mut blake3::Hasher]) -> Result<()> {
+        for c in bytes.chunks(CHUNK) {
+            #[cfg(not(target_arch = "wasm32"))]
+            if c.len() >= PAR_HASH {
+                let w = std::thread::scope(|s| {
+                    for h in hashers.iter_mut() {
+                        s.spawn(move || h.update_rayon(c));
+                    }
+                    self.write_all(c)
+                });
+                w?;
+                continue;
+            }
+            for h in hashers.iter_mut() {
+                h.update(c);
+            }
+            self.write_all(c)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn add(&mut self, name: &str, dtype: DType, shape: &[usize], bytes: &[u8]) -> Result<()> {
         if name.is_empty() || name.len() > 1024 {
             bail!("invalid_argument", "invalid tensor name {name:?}");
@@ -174,11 +197,10 @@ impl WriterState {
             self.write_zeros(pad)?;
         }
         let mut th = blake3::Hasher::new();
-        for c in bytes.chunks(CHUNK) {
-            update(&mut self.data_hasher, c);
-            update(&mut th, c);
-            self.write_all(c)?;
-        }
+        let mut dh = std::mem::take(&mut self.data_hasher);
+        let r = self.hash_and_write(bytes, &mut [&mut dh, &mut th]);
+        self.data_hasher = dh;
+        r?;
         self.tensors.push(TensorInfo {
             name: name.to_string(),
             dtype,
@@ -229,19 +251,13 @@ impl WriterState {
         let (infos, index, total) = blobs::layout(&list)?;
         let start = self.pos;
         let mut h = blake3::Hasher::new();
-        let mut put = |st: &mut WriterState, b: &[u8]| -> Result<()> {
-            update(&mut h, b);
-            st.write_all(b)
-        };
-        put(self, &(index.len() as u64).to_le_bytes())?;
-        put(self, &index)?;
+        self.hash_and_write(&(index.len() as u64).to_le_bytes(), &mut [&mut h])?;
+        self.hash_and_write(&index, &mut [&mut h])?;
         let blobs = std::mem::take(&mut self.blobs);
         for (info, b) in infos.iter().zip(&blobs) {
             let pad = start + info.offset - self.pos;
-            put(self, &vec![0u8; pad as usize])?;
-            for c in b.bytes().chunks(CHUNK) {
-                put(self, c)?;
-            }
+            self.hash_and_write(&vec![0u8; pad as usize], &mut [&mut h])?;
+            self.hash_and_write(b.bytes(), &mut [&mut h])?;
         }
         debug_assert_eq!(self.pos - start, total);
         Ok(Section { kind: SECTION_BLOBS, flags: FLAG_REQUIRED, offset: start, length: total, hash: *h.finalize().as_bytes() })
