@@ -252,7 +252,7 @@ impl Dst {
                             *o = f32_to_i32(v);
                         }
                     }
-                    DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => unreachable!("Dst never holds quantized dtypes"),
+                    DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => unreachable!("Dst never holds quantized dtypes"),
                 }
                 return;
             }
@@ -281,7 +281,7 @@ impl Dst {
                         *p.add(at(base, stride, t)) = f32_to_i32(v);
                     }
                 }
-                DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => unreachable!("Dst never holds quantized dtypes"),
+                DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => unreachable!("Dst never holds quantized dtypes"),
             }
         }
     }
@@ -321,7 +321,7 @@ impl Dst {
                         *p.add(o) = f32_to_i32(v);
                     }
                 }
-                DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => unreachable!("Dst never holds quantized dtypes"),
+                DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => unreachable!("Dst never holds quantized dtypes"),
             }
         }
     }

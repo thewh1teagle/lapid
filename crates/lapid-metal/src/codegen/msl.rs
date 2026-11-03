@@ -13,7 +13,7 @@ pub(crate) fn elem_ty(d: DType) -> &'static str {
         DType::F16 => "half",
         DType::BF16 => "ushort",
         DType::I32 => "int",
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => "uchar",
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => "uchar",
     }
 }
 

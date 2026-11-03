@@ -35,13 +35,17 @@ pub enum DType {
     Q5K,
     #[serde(rename = "q6_k")]
     Q6K,
+    /// MXFP4 (32-element blocks, e8m0 scale + e2m1 values; ggml `block_mxfp4` AoS, see
+    /// lapid-quant). Same usage rules as the K formats.
+    #[serde(rename = "mxfp4")]
+    Mxfp4,
 }
 
 impl DType {
     pub const QUANT_GROUP: usize = 32;
 
     pub fn is_quant(self) -> bool {
-        matches!(self, DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K)
+        matches!(self, DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4)
     }
 
     /// The lapid-quant format of a quantized dtype.
@@ -52,6 +56,7 @@ impl DType {
             DType::Q4K => lapid_quant::Format::Q4K,
             DType::Q5K => lapid_quant::Format::Q5K,
             DType::Q6K => lapid_quant::Format::Q6K,
+            DType::Mxfp4 => lapid_quant::Format::Mxfp4,
             _ => return None,
         })
     }
@@ -65,7 +70,7 @@ impl DType {
         match self {
             DType::F32 | DType::I32 => 4,
             DType::F16 | DType::BF16 => 2,
-            DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => panic!("size() on quantized dtype {self:?}"),
+            DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => panic!("size() on quantized dtype {self:?}"),
         }
     }
 
@@ -81,6 +86,7 @@ impl DType {
             DType::Q4K => "q4_k",
             DType::Q5K => "q5_k",
             DType::Q6K => "q6_k",
+            DType::Mxfp4 => "mxfp4",
         }
     }
 
@@ -95,6 +101,7 @@ impl DType {
             "q4_k" => DType::Q4K,
             "q5_k" => DType::Q5K,
             "q6_k" => DType::Q6K,
+            "mxfp4" => DType::Mxfp4,
             _ => return None,
         })
     }

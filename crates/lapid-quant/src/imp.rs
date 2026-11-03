@@ -77,7 +77,7 @@ pub fn quantize(format: Format, data: &[f32], rows: usize, cols: usize) -> Vec<u
     if let Some((q, _)) = kfns(format) {
         // Rows are contiguous and a whole number of blocks: one block per 256 values.
         let bb = format.block_bytes();
-        for (x, b) in data.chunks_exact(kquant::QK_K).zip(out.chunks_exact_mut(bb)) {
+        for (x, b) in data.chunks_exact(format.block_elems()).zip(out.chunks_exact_mut(bb)) {
             q(x, b);
         }
         return out;
@@ -118,9 +118,9 @@ pub fn dequantize_row(format: Format, bytes: &[u8], rows: usize, cols: usize, ro
     assert_eq!(out.len(), cols, "dequantize_row: out has {} elements, expected {cols}", out.len());
     if let Some((_, d)) = kfns(format) {
         let bb = format.block_bytes();
-        let nb = cols / kquant::QK_K;
+        let nb = cols / format.block_elems();
         let row_bytes = &bytes[row * nb * bb..(row + 1) * nb * bb];
-        for (b, y) in row_bytes.chunks_exact(bb).zip(out.chunks_exact_mut(kquant::QK_K)) {
+        for (b, y) in row_bytes.chunks_exact(bb).zip(out.chunks_exact_mut(format.block_elems())) {
             d(b, y);
         }
         return;
@@ -197,6 +197,7 @@ fn kfns(format: Format) -> Option<KFns> {
         Format::Q4K => Some((kquant::quantize_q4k, kquant::dequantize_q4k)),
         Format::Q5K => Some((kquant::quantize_q5k, kquant::dequantize_q5k)),
         Format::Q6K => Some((kquant::quantize_q6k, kquant::dequantize_q6k)),
+        Format::Mxfp4 => Some((crate::mxfp4::quantize_block, crate::mxfp4::dequantize_block)),
         Format::Int8 | Format::Int4 => None,
     }
 }

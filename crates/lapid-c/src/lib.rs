@@ -49,6 +49,7 @@ pub const LAPID_DTYPE_Q4_K: LapidDType = 6;
 pub const LAPID_DTYPE_Q5_K: LapidDType = 7;
 /// ggml Q6_K super-blocks.
 pub const LAPID_DTYPE_Q6_K: LapidDType = 8;
+pub const LAPID_DTYPE_MXFP4: LapidDType = 9;
 
 /// Unary op code for `lapid_unary` (`LAPID_UNARY_*`).
 pub type LapidUnaryOp = i32;
@@ -129,6 +130,7 @@ pub(crate) fn dtype_from_c(d: LapidDType) -> engine::Result<engine::DType> {
         LAPID_DTYPE_Q4_K => DType::Q4K,
         LAPID_DTYPE_Q5_K => DType::Q5K,
         LAPID_DTYPE_Q6_K => DType::Q6K,
+        LAPID_DTYPE_MXFP4 => DType::Mxfp4,
         other => return Err(engine::Error::new("invalid_argument", format!("unknown dtype code {other}"))),
     })
 }
@@ -145,5 +147,6 @@ pub(crate) fn dtype_to_c(d: engine::DType) -> LapidDType {
         DType::Q4K => LAPID_DTYPE_Q4_K,
         DType::Q5K => LAPID_DTYPE_Q5_K,
         DType::Q6K => LAPID_DTYPE_Q6_K,
+        DType::Mxfp4 => LAPID_DTYPE_MXFP4,
     }
 }

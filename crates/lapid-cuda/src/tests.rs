@@ -81,7 +81,7 @@ pub(crate) fn bytes(d: DType, v: &[f32]) -> Vec<u8> {
             .flat_map(|x| bf16::from_f32(*x).to_le_bytes())
             .collect(),
         DType::I32 => v.iter().flat_map(|x| (*x as i32).to_le_bytes()).collect(),
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => panic!("use quant()"),
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => panic!("use quant()"),
     }
 }
 

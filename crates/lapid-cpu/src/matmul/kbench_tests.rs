@@ -65,6 +65,7 @@ pub(crate) fn dtype(fmt: Format) -> DType {
         Format::Q4K => DType::Q4K,
         Format::Q5K => DType::Q5K,
         Format::Q6K => DType::Q6K,
+        Format::Mxfp4 => DType::Mxfp4,
     }
 }
 

@@ -180,6 +180,7 @@ pub extern "C" fn lapid_dtype_name(dtype: LapidDType) -> *const c_char {
         Ok(DType::Q4K) => "q4_k\0",
         Ok(DType::Q5K) => "q5_k\0",
         Ok(DType::Q6K) => "q6_k\0",
+        Ok(DType::Mxfp4) => "mxfp4\0",
         Err(_) => return std::ptr::null(),
     };
     s.as_ptr().cast()

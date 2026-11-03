@@ -117,6 +117,8 @@ typedef int32_t lapid_reduce_op;
 // ggml Q6_K super-blocks.
 #define LAPID_DTYPE_Q6_K 8
 
+#define LAPID_DTYPE_MXFP4 9
+
 #define LAPID_UNARY_NEG 0
 
 #define LAPID_UNARY_EXP 1

@@ -44,7 +44,7 @@ pub fn input(binding: usize, name: &str, d: DType, caps: &Caps) -> String {
         DType::BF16 => format!(
             "let w = {name}[e >> 1u];\n    return bitcast<f32>(select(w << 16u, w & 0xffff0000u, (e & 1u) == 1u));"
         ),
-        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K => return s + &quant_fns(name, d),
+        DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => return s + &quant_fns(name, d),
     };
     let _ = writeln!(s, "fn ld_{name}(e: u32) -> f32 {{\n    {body}\n}}");
     s

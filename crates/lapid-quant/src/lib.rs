@@ -33,13 +33,16 @@ pub enum Format {
     Q5K,
     /// ggml Q6_K: 256-element super-blocks of 210 bytes (AoS, as in GGUF).
     Q6K,
+    /// MXFP4: 32-element blocks of 17 bytes (e8m0 scale + 16 e2m1 nibble pairs), AoS as
+    /// ggml `block_mxfp4` (see [`mxfp4`]).
+    Mxfp4,
 }
 
 impl Format {
     /// Elements per quantization block along a row (32 for Int8/Int4, 256 for K formats).
     pub const fn block_elems(self) -> usize {
         match self {
-            Format::Int8 | Format::Int4 => GROUP,
+            Format::Int8 | Format::Int4 | Format::Mxfp4 => GROUP,
             Format::Q4K | Format::Q5K | Format::Q6K => 256,
         }
     }
@@ -50,6 +53,7 @@ impl Format {
             Format::Q4K => 144,
             Format::Q5K => 176,
             Format::Q6K => 210,
+            Format::Mxfp4 => mxfp4::BYTES,
         }
     }
     pub const fn is_aos(self) -> bool {
@@ -133,3 +137,4 @@ pub fn pack_int4(q: &[u8], scales: &[f32], rows: usize, cols: usize) -> Vec<u8> 
 
 mod imp;
 pub mod kquant;
+pub mod mxfp4;
