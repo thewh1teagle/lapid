@@ -39,13 +39,31 @@ pub enum DType {
     /// lapid-quant). Same usage rules as the K formats.
     #[serde(rename = "mxfp4")]
     Mxfp4,
+    /// ggml IQ2_XXS (256-element super-blocks of 66 bytes, 2.06 bpw; grid codebook + signs,
+    /// AoS as in GGUF, see lapid-quant). Same usage rules as the K formats.
+    #[serde(rename = "iq2_xxs")]
+    Iq2Xxs,
+    /// ggml IQ2_S (256-element super-blocks of 82 bytes, 2.56 bpw).
+    #[serde(rename = "iq2_s")]
+    Iq2S,
+    /// ggml IQ3_XXS (256-element super-blocks of 98 bytes, 3.06 bpw).
+    #[serde(rename = "iq3_xxs")]
+    Iq3Xxs,
 }
 
 impl DType {
     pub const QUANT_GROUP: usize = 32;
 
     pub fn is_quant(self) -> bool {
-        matches!(self, DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4)
+        matches!(
+            self,
+            DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs
+        )
+    }
+
+    /// The grid-codebook i-quants (IQ2_XXS, IQ2_S, IQ3_XXS).
+    pub fn is_iquant(self) -> bool {
+        matches!(self, DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs)
     }
 
     /// The lapid-quant format of a quantized dtype.
@@ -57,6 +75,9 @@ impl DType {
             DType::Q5K => lapid_quant::Format::Q5K,
             DType::Q6K => lapid_quant::Format::Q6K,
             DType::Mxfp4 => lapid_quant::Format::Mxfp4,
+            DType::Iq2Xxs => lapid_quant::Format::Iq2Xxs,
+            DType::Iq2S => lapid_quant::Format::Iq2S,
+            DType::Iq3Xxs => lapid_quant::Format::Iq3Xxs,
             _ => return None,
         })
     }
@@ -70,7 +91,15 @@ impl DType {
         match self {
             DType::F32 | DType::I32 => 4,
             DType::F16 | DType::BF16 => 2,
-            DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => panic!("size() on quantized dtype {self:?}"),
+            DType::Int8
+            | DType::Int4
+            | DType::Q4K
+            | DType::Q5K
+            | DType::Q6K
+            | DType::Mxfp4
+            | DType::Iq2Xxs
+            | DType::Iq2S
+            | DType::Iq3Xxs => panic!("size() on quantized dtype {self:?}"),
         }
     }
 
@@ -87,6 +116,9 @@ impl DType {
             DType::Q5K => "q5_k",
             DType::Q6K => "q6_k",
             DType::Mxfp4 => "mxfp4",
+            DType::Iq2Xxs => "iq2_xxs",
+            DType::Iq2S => "iq2_s",
+            DType::Iq3Xxs => "iq3_xxs",
         }
     }
 
@@ -102,6 +134,9 @@ impl DType {
             "q5_k" => DType::Q5K,
             "q6_k" => DType::Q6K,
             "mxfp4" => DType::Mxfp4,
+            "iq2_xxs" => DType::Iq2Xxs,
+            "iq2_s" => DType::Iq2S,
+            "iq3_xxs" => DType::Iq3Xxs,
             _ => return None,
         })
     }

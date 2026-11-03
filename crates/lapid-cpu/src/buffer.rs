@@ -205,7 +205,7 @@ impl CpuBuffer {
                 DType::I32 => Src::I32(std::slice::from_raw_parts(p as *const i32, self.len / 4)),
                 DType::F16 => Src::F16(std::slice::from_raw_parts(p as *const f16, self.len / 2)),
                 DType::BF16 => Src::BF16(std::slice::from_raw_parts(p as *const bf16, self.len / 2)),
-                DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 => {
+                DType::Int8 | DType::Int4 | DType::Q4K | DType::Q5K | DType::Q6K | DType::Mxfp4 | DType::Iq2Xxs | DType::Iq2S | DType::Iq3Xxs => {
                     return Err(Error::new(
                         "unsupported_dtype",
                         format!("cpu: quantized dtype {} cannot be read elementwise", dtype.name()),

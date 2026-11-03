@@ -18,6 +18,7 @@ mod expr;
 mod expr_int;
 mod fuse;
 mod index;
+mod iquant;
 mod kcache;
 mod kquant;
 mod math;

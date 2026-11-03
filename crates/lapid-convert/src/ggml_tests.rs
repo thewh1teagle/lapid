@@ -215,9 +215,9 @@ fn every_type_dequantizes() {
 
 #[test]
 fn errors() {
-    let e = dequantize(GgmlType::from_id(16), &[], 0).err().expect("iq2_xxs");
+    let e = dequantize(GgmlType::from_id(19), &[], 0).err().expect("iq1_s");
     assert_eq!(e.code, "unsupported_gguf_type");
-    assert!(e.message.contains("iq2_xxs"), "{}", e.message);
+    assert!(e.message.contains("iq1_s"), "{}", e.message);
     assert_eq!(dequantize(GgmlType::Q4K, &[0; 144], 128).err().map(|e| e.code), Some("format"));
     assert_eq!(dequantize(GgmlType::Q8_0, &[0; 33], 32).err().map(|e| e.code), Some("format"));
 }

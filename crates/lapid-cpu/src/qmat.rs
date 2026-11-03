@@ -26,6 +26,9 @@ pub(crate) fn format_of(dtype: DType) -> Option<Format> {
         DType::Q5K => Some(Format::Q5K),
         DType::Q6K => Some(Format::Q6K),
         DType::Mxfp4 => Some(Format::Mxfp4),
+        DType::Iq2Xxs => Some(Format::Iq2Xxs),
+        DType::Iq2S => Some(Format::Iq2S),
+        DType::Iq3Xxs => Some(Format::Iq3Xxs),
         _ => None,
     }
 }
@@ -55,7 +58,7 @@ impl<'a> QMat<'a> {
         Ok(QMat { fmt, rows, cols, qs, scales })
     }
 
-    /// AoS ggml block matrix: K-quants or MXFP4 (no SoA scales plane).
+    /// AoS ggml block matrix: K-quants, MXFP4 or i-quants (no SoA scales plane).
     #[inline(always)]
     pub fn is_k(&self) -> bool {
         self.fmt.is_aos()

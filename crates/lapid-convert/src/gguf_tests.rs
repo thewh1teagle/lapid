@@ -211,3 +211,34 @@ fn mxfp4_kept_as_is() {
     std::fs::remove_file(&src).ok();
     std::fs::remove_file(&out).ok();
 }
+
+#[test]
+fn iquants_kept_as_is() {
+    // 3 rows x 256 of ggml IQ2_XXS (16) / IQ3_XXS (18) / IQ2_S (22): stored unchanged.
+    let x: Vec<f32> = (0..3 * 256).map(|i| ((i * 7919) % 1013) as f32 / 500.0 - 1.0).collect();
+    for (id, fmt, dt) in [(16, Format::Iq2Xxs, DType::Iq2Xxs), (18, Format::Iq3Xxs, DType::Iq3Xxs), (22, Format::Iq2S, DType::Iq2S)] {
+        let l = lapid_quant::layout(fmt, 3, 256);
+        let blocks = lapid_quant::quantize(fmt, &x, 3, 256)[..l.qs_bytes].to_vec();
+        let mut g = GgufBuilder::default();
+        g.tensor("iq", &[256, 3], GgmlType::from_id(id), blocks.clone());
+        let src = tmp(&format!("iq{id}.gguf"));
+        std::fs::write(&src, g.build(3)).expect("write");
+        let f = GgufFile::open(&src).expect("open");
+        let out = tmp(&format!("iq{id}.lapid"));
+        let meta = crate::writer::metadata("t", "test", OutDType::Int8, "mit", json!({"repo": "x/y"}));
+        let mut w = ModelWriter::create(&out, meta, OutDType::Int8, role, 3).expect("create");
+        for t in &f.tensors {
+            f.write_tensor(&mut w, &t.name, t, None).expect("write");
+        }
+        w.finish(&[]).expect("finish");
+        let r = lapid_format::Reader::open(&out).expect("open lapid");
+        let t = r.tensor("iq").expect("iq");
+        assert_eq!((t.dtype, t.shape.clone()), (dt, vec![3, 256]));
+        assert_eq!(&r.tensor_bytes(t)[..blocks.len()], &blocks[..]);
+        // the f32 dequantizer agrees with lapid-quant
+        let deq = crate::ggml::dequantize(GgmlType::from_id(id), &blocks, 3 * 256).expect("dequantize");
+        assert_eq!(deq, lapid_quant::dequantize(fmt, r.tensor_bytes(t), 3, 256));
+        std::fs::remove_file(&src).ok();
+        std::fs::remove_file(&out).ok();
+    }
+}

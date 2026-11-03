@@ -338,20 +338,27 @@ fn gather_plain_and_quant() {
     }
 }
 
-/// MatMulId over an MXFP4 expert stack `[E, N, K]` (each expert `layout(..).total` bytes):
+/// MatMulId over MXFP4 and i-quant expert stacks `[E, N, K]` (each expert `layout(..).total` bytes):
 /// decode-sized (int8 activations) and prefill-sized (exact) row counts per expert.
 #[test]
 fn matmul_id_mxfp4() {
-    let (e, n, k) = (5, 24, 96);
+    for (dt, k) in [(DType::Mxfp4, 96), (DType::Iq2Xxs, 256), (DType::Iq2S, 512), (DType::Iq3Xxs, 256)] {
+        matmul_id_quant(dt, k);
+    }
+}
+
+fn matmul_id_quant(dt: DType, k: usize) {
+    let fmt = dt.quant_format().unwrap();
+    let (e, n) = (5, 24);
     let mut rng = Rng(9);
-    let one = lapid_quant::layout(Format::Mxfp4, n, k).total;
+    let one = lapid_quant::layout(fmt, n, k).total;
     let mut wb = vec![0u8; e * one];
     let mut wf = Vec::new();
     for x in 0..e {
         let w: Vec<f32> = rng.vec(n * k).iter().map(|v| v * 0.1).collect();
-        let b = lapid_quant::quantize(Format::Mxfp4, &w, n, k);
+        let b = lapid_quant::quantize(fmt, &w, n, k);
         wb[x * one..x * one + b.len()].copy_from_slice(&b);
-        wf.extend(lapid_quant::dequantize(Format::Mxfp4, &b, n, k));
+        wf.extend(lapid_quant::dequantize(fmt, &b, n, k));
     }
     for (t, r) in [(1usize, 2usize), (40, 3)] {
         let x = rng.vec(t * k);
@@ -364,13 +371,13 @@ fn matmul_id_mxfp4() {
                 want[i * n + j] = s as f32;
             }
         }
-        let spec = Arc::new(MatMulIdSpec { x_dtype: DType::F32, w_dtype: DType::Mxfp4, out_dtype: DType::F32 });
+        let spec = Arc::new(MatMulIdSpec { x_dtype: DType::F32, w_dtype: dt, out_dtype: DType::F32 });
         let kernel = Kernel::MatMulId(spec, MatMulIdDims { t, r, e, n, k });
         for be in backends() {
             let ins = vec![up(&be, &x, DType::F32), be.upload(&wb).unwrap(), be.upload(bytemuck::cast_slice(&ids)).unwrap()];
             let got = down(&be, &run(&be, kernel.clone(), ins, t * r * n * 4), DType::F32);
             let err = rel_err(&got, &want);
-            assert!(err < if t * r <= 8 { 2e-2 } else { 1e-5 }, "t={t} r={r}: rel err {err}");
+            assert!(err < if t * r <= 8 { 2e-2 } else { 1e-5 }, "{dt:?} t={t} r={r}: rel err {err}");
         }
     }
 }

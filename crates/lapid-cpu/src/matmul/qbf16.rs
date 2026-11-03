@@ -2,7 +2,7 @@
 //!
 //! Exact on the dequantized weights (~1e-5 relative, no int8 activation blocks): every
 //! supported weight format is `w = s[g] * q - mn[g]` with small integer quants `q` (int8,
-//! int4 - 8, q4_K 0..15, q5_K 0..31, q6_K -32..31, MXFP4 2*e2m1 in -12..12), which are exact bf16 values. So:
+//! int4 - 8, q4_K 0..15, q5_K 0..31, q6_K -32..31, MXFP4 2*e2m1 in -12..12, i-quant grid * sign in -62..62), which are exact bf16 values. So:
 //! * B holds the integer quants as bf16, with an f32 scale per scale group (32 elements; 16
 //!   for q6_K) applied after the group's products, and for q4_K / q5_K the min term
 //!   `mn[g] * sum(a over g)` subtracted with f32 activation group sums;
@@ -133,6 +133,19 @@ mod imp {
             }
             return;
         }
+        if b.fmt.is_iquant() {
+            // grid * sign in -62..62, a scale per 16 elements (IQ2_S) or 32, no min.
+            let mut g = [0i8; QK];
+            let per = if b.fmt == Format::Iq2S { 16 } else { 8 };
+            for blk in 0..b.cols / QK {
+                let sc = crate::iquant::unpack_block(b.fmt, km.block(row, blk), &mut g);
+                q[blk * QK..(blk + 1) * QK].copy_from_slice(&g);
+                for i in 0..per {
+                    s[blk * per + i] = sc[i * 16 / per];
+                }
+            }
+            return;
+        }
         for blk in 0..b.cols / QK {
             let bb = km.block(row, blk);
             // SAFETY: `bb` is a whole block of `b.fmt`; stores stay inside `q[blk*256..+256]`.
@@ -222,7 +235,7 @@ mod imp {
         let pair = kc * 8;
         let kg = k / GROUP;
         // Scale groups of 16 for q6_K, else 32; mins for q4_K / q5_K.
-        let sg = if b.fmt == Format::Q6K { 16 } else { GROUP };
+        let sg = if matches!(b.fmt, Format::Q6K | Format::Iq2S) { 16 } else { GROUP };
         let ng = k / sg;
         let has_min = matches!(b.fmt, Format::Q4K | Format::Q5K);
         let apair = if split { 2 * pair } else { pair };

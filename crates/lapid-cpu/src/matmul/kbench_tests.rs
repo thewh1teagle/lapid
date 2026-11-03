@@ -50,6 +50,11 @@ pub(crate) fn rand_weight(fmt: Format, n: usize, k: usize, seed: u64) -> Vec<u8>
                 b[0] = 120;
             }
         }
+        f if f.is_iquant() => {
+            for b in v[..l.qs_bytes].chunks_exact_mut(fmt.block_bytes()) {
+                b[0..2].copy_from_slice(&d);
+            }
+        }
         _ => {
             for b in v[..l.qs_bytes].chunks_exact_mut(fmt.block_bytes()) {
                 if fmt == Format::Q6K {
@@ -72,6 +77,9 @@ pub(crate) fn dtype(fmt: Format) -> DType {
         Format::Q5K => DType::Q5K,
         Format::Q6K => DType::Q6K,
         Format::Mxfp4 => DType::Mxfp4,
+        Format::Iq2Xxs => DType::Iq2Xxs,
+        Format::Iq2S => DType::Iq2S,
+        Format::Iq3Xxs => DType::Iq3Xxs,
     }
 }
 
@@ -132,6 +140,10 @@ fn kbench_gemv() {
     eprintln!("{}", be.device_name());
     let mut shapes: Vec<(usize, usize, Format)> = SHAPES.to_vec();
     shapes.extend([(3072, 1024, Format::Q5K), (3072, 1024, Format::Int8), (3072, 1024, Format::Int4), (3072, 1024, Format::Mxfp4), (2048, 4096, Format::Q4K), (2048, 4096, Format::Mxfp4), (64, 1024, Format::Q4K), (256, 1024, Format::Q4K)]);
+    // DeepSeek V4.1 routed expert shapes: gate/up and down, MXFP4 vs the i-quants
+    for fmt in [Format::Mxfp4, Format::Iq2Xxs, Format::Iq2S, Format::Iq3Xxs] {
+        shapes.extend([(2304, 5120, fmt), (5120, 2304, fmt)]);
+    }
     for m in [1usize, 2] {
         for &(n, k, fmt) in &shapes {
             let a = be.upload(bytemuck::cast_slice(&rnd(m * k, 3))).unwrap();

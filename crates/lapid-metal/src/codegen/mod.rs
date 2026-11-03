@@ -154,15 +154,15 @@ pub(crate) fn io_binds(n: usize) -> Vec<Bind> {
 }
 
 pub(crate) fn plan(kernel: &Kernel) -> Result<Plan> {
-    // MXFP4 weights have no Metal kernels (CPU / CUDA only).
+    // MXFP4 and i-quant weights have no Metal kernels (CPU / CUDA only).
     let weights = match kernel {
         Kernel::MatMul(s, _) => Some(s.b_dtype),
         Kernel::Gather(s, _) => Some(s.table_dtype),
         Kernel::MatMulId(s, _) => Some(s.w_dtype),
         _ => None,
     };
-    if weights == Some(DType::Mxfp4) {
-        return Err(Error::new("unsupported_dtype", "metal: mxfp4 weights are not supported"));
+    if let Some(w) = weights.filter(|w| *w == DType::Mxfp4 || w.is_iquant()) {
+        return Err(Error::new("unsupported_dtype", format!("metal: {} weights are not supported", w.name())));
     }
     match kernel {
         Kernel::Elementwise(s, d) => elementwise::plan(s, d).map(Plan::single),

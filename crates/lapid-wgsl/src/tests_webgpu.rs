@@ -113,15 +113,18 @@ fn webgpu_kernels_validate() {
     assert!(failures.is_empty(), "{} kernels failed:\n{}", failures.len(), failures.join("\n"));
 }
 
-/// MXFP4 weights have no WGSL kernels: planning fails cleanly instead of rendering a shader.
+/// MXFP4 and i-quant weights have no WGSL kernels: planning fails cleanly instead of
+/// rendering a shader.
 #[test]
 fn mxfp4_rejected_at_plan() {
     let c = Caps::baseline();
-    let view = MatView { offset: 0, batch_stride: 0, row_stride: 64 };
-    let dims = MatMulDims { batch: 1, m: 1, n: 4, k: 64, a: view.clone(), b: view, extra_views: vec![], out: MatView::contiguous(1, 4) };
-    let gather = Kernel::Gather(Arc::new(GatherSpec { table_dtype: DType::Mxfp4, out_dtype: DType::F32 }), GatherDims { rows: 4, cols: 64, count: 1 });
-    let id = Kernel::MatMulId(Arc::new(MatMulIdSpec { x_dtype: DType::F32, w_dtype: DType::Mxfp4, out_dtype: DType::F32 }), MatMulIdDims { t: 1, r: 1, e: 2, n: 4, k: 64 });
-    for k in [Kernel::MatMul(mm(DType::F32, DType::Mxfp4, true, false), dims), gather, id] {
-        assert_eq!(crate::plan(&k, &c).err().map(|e| e.code), Some("unsupported_dtype"));
+    for w in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2S, DType::Iq3Xxs] {
+        let view = MatView { offset: 0, batch_stride: 0, row_stride: 256 };
+        let dims = MatMulDims { batch: 1, m: 1, n: 4, k: 256, a: view.clone(), b: view, extra_views: vec![], out: MatView::contiguous(1, 4) };
+        let gather = Kernel::Gather(Arc::new(GatherSpec { table_dtype: w, out_dtype: DType::F32 }), GatherDims { rows: 4, cols: 256, count: 1 });
+        let id = Kernel::MatMulId(Arc::new(MatMulIdSpec { x_dtype: DType::F32, w_dtype: w, out_dtype: DType::F32 }), MatMulIdDims { t: 1, r: 1, e: 2, n: 4, k: 256 });
+        for k in [Kernel::MatMul(mm(DType::F32, w, true, false), dims), gather, id] {
+            assert_eq!(crate::plan(&k, &c).err().map(|e| e.code), Some("unsupported_dtype"));
+        }
     }
 }

@@ -56,6 +56,9 @@ impl Target {
             Target::Quant(Format::Q5K) => DType::Q5K,
             Target::Quant(Format::Q6K) => DType::Q6K,
             Target::Quant(Format::Mxfp4) => DType::Mxfp4,
+            Target::Quant(Format::Iq2Xxs) => DType::Iq2Xxs,
+            Target::Quant(Format::Iq2S) => DType::Iq2S,
+            Target::Quant(Format::Iq3Xxs) => DType::Iq3Xxs,
         }
     }
 }
@@ -193,8 +196,8 @@ pub fn encode(target: Target, data: &[f32], shape: &[usize]) -> Result<(DType, V
 /// every format), so the bytes are identical.
 pub fn quantize_par(f: Format, data: &[f32], rows: usize, cols: usize) -> Vec<u8> {
     let l = lapid_quant::layout(f, rows, cols);
-    // Small matrices: not worth the threads.
-    if rows * cols < 1 << 18 || rows < 2 {
+    // Small matrices: not worth the threads. The i-quants thread internally.
+    if rows * cols < 1 << 18 || rows < 2 || f.is_iquant() {
         return lapid_quant::quantize(f, data, rows, cols);
     }
     let parts = crate::parallel::map_ranges(rows, 64, |r| (r.clone(), lapid_quant::quantize(f, &data[r.start * cols..r.end * cols], r.len(), cols)));
@@ -271,7 +274,7 @@ mod tests {
     fn parallel_quantize_identical() {
         let (rows, cols) = (1031, 512);
         let x: Vec<f32> = (0..rows * cols).map(|i| ((i * 7919) % 1013) as f32 / 97.0 - 5.0).collect();
-        for f in [Format::Int8, Format::Int4, Format::Q4K, Format::Q6K, Format::Mxfp4] {
+        for f in [Format::Int8, Format::Int4, Format::Q4K, Format::Q6K, Format::Mxfp4, Format::Iq2S] {
             assert!(quantize_par(f, &x, rows, cols) == lapid_quant::quantize(f, &x, rows, cols), "{f:?}");
         }
     }

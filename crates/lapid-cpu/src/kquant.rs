@@ -86,14 +86,17 @@ pub(crate) fn unpack_block(fmt: Format, b: &[u8], out: &mut [i8; QK]) {
                 }
             }
         }
-        Format::Int8 | Format::Int4 | Format::Mxfp4 => unreachable!("not a K format"),
+        Format::Int8 | Format::Int4 | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs => unreachable!("not a K format"),
     }
 }
 
-/// Dequantize one block (256 elements; 32 for MXFP4).
+/// Dequantize one block (256 elements; 32 for MXFP4; i-quants via `iquant`).
 pub(crate) fn dequant_block(fmt: Format, b: &[u8], out: &mut [f32]) {
     if fmt == Format::Mxfp4 {
         return crate::mxfp4::dequant_block(b, out);
+    }
+    if fmt.is_iquant() {
+        return crate::iquant::dequant_block(fmt, b, out);
     }
     let mut q = [0i8; QK];
     unpack_block(fmt, b, &mut q);
@@ -118,7 +121,7 @@ pub(crate) fn dequant_block(fmt: Format, b: &[u8], out: &mut [f32]) {
                 }
             }
         }
-        Format::Int8 | Format::Int4 | Format::Mxfp4 => unreachable!("not a K format"),
+        Format::Int8 | Format::Int4 | Format::Mxfp4 | Format::Iq2Xxs | Format::Iq2S | Format::Iq3Xxs => unreachable!("not a K format"),
     }
 }
 
@@ -169,6 +172,15 @@ pub(crate) fn select(isa: &crate::Isa, fmt: Format) -> KKernels {
         #[cfg(target_arch = "aarch64")]
         if isa.dotprod {
             use crate::mxfp4::tile_sdot as t;
+            return KKernels { t1: t::<1>, t2: t::<2>, t4: t::<4> };
+        }
+        return KKernels { t1: ts::<1>, t2: ts::<2>, t4: ts::<4> };
+    }
+    if fmt.is_iquant() {
+        use crate::iquant::tile_scalar as ts;
+        #[cfg(target_arch = "aarch64")]
+        if isa.dotprod {
+            use crate::iquant::tile_sdot as t;
             return KKernels { t1: t::<1>, t2: t::<2>, t4: t::<4> };
         }
         return KKernels { t1: ts::<1>, t2: ts::<2>, t4: ts::<4> };

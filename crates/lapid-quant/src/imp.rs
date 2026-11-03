@@ -74,6 +74,15 @@ pub fn quantize(format: Format, data: &[f32], rows: usize, cols: usize) -> Vec<u
     let l = check_shape(format, rows, cols);
     assert_eq!(data.len(), rows * cols, "quantize: data has {} elements, expected {rows}x{cols}", data.len());
     let mut out = vec![0u8; l.total];
+    if format.is_iquant() {
+        let q = match format {
+            Format::Iq2Xxs => crate::iq2_xxs::quantize(data, cols, None),
+            Format::Iq2S => crate::iq2_s::quantize(data, cols, None),
+            _ => crate::iq3_xxs::quantize(data, cols, None),
+        };
+        out[..q.len()].copy_from_slice(&q);
+        return out;
+    }
     if let Some((q, _)) = kfns(format) {
         // Rows are contiguous and a whole number of blocks: one block per 256 values.
         let bb = format.block_bytes();
@@ -198,6 +207,9 @@ fn kfns(format: Format) -> Option<KFns> {
         Format::Q5K => Some((kquant::quantize_q5k, kquant::dequantize_q5k)),
         Format::Q6K => Some((kquant::quantize_q6k, kquant::dequantize_q6k)),
         Format::Mxfp4 => Some((crate::mxfp4::quantize_block, crate::mxfp4::dequantize_block)),
+        Format::Iq2Xxs => Some((|x, o| crate::iq2_xxs::quantize_block(x, None, o), crate::iq2_xxs::dequantize_block)),
+        Format::Iq2S => Some((|x, o| crate::iq2_s::quantize_block(x, None, o), crate::iq2_s::dequantize_block)),
+        Format::Iq3Xxs => Some((|x, o| crate::iq3_xxs::quantize_block(x, None, o), crate::iq3_xxs::dequantize_block)),
         Format::Int8 | Format::Int4 => None,
     }
 }

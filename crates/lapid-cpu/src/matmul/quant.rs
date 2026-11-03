@@ -98,7 +98,7 @@ pub(crate) fn matmul(ctx: &Ctx, ws: &mut Workspace, a: &AOp, b: &QMat, d: &MatMu
     let qa = grow(&mut ws.q, rows * k);
     let sa = grow(&mut ws.s, rows * kg);
     // K formats: per-group `da * sum(q)` for the min terms.
-    let has_bs = b.is_k() && b.fmt != lapid_quant::Format::Mxfp4;
+    let has_bs = matches!(b.fmt, lapid_quant::Format::Q4K | lapid_quant::Format::Q5K);
     let bs = grow(&mut ws.pa_f, if has_bs { rows * kg } else { 0 });
     let a_f32 = a.src.as_f32();
     {

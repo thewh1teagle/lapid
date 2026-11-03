@@ -20,7 +20,8 @@ them, and the numeric tolerances backends must meet. Owner: agent `compiler`.
   operands of exactly the output shape (via `Reshape` + `Expand`).
 - **dtype rules.** Elementwise outputs take the dtype of the first float operand (builder
   rule); comparisons return the operand dtype holding 1.0 / 0.0. Quantized dtypes
-  (`int8`, `int4`, and the ggml K-quants `q4_k`, `q5_k`, `q6_k`) are only legal as the `b`
+  (`int8`, `int4`, the ggml K-quants `q4_k`, `q5_k`, `q6_k`, `mxfp4` and the i-quants
+  `iq2_xxs`, `iq2_s`, `iq3_xxs`) are only legal as the `b`
   operand of `MatMul` (transposed, 2-D), the expert stack of `MatMulId` (3-D) and the table
   of `Gather`, optionally through a same-shape `Reshape`; anything else is
   `Error{code:"unsupported"}` at compile time. The last dim must be a multiple of the

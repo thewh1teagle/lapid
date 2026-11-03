@@ -170,8 +170,9 @@ A UTF-8 JSON array (≤ 64 MiB, ≤ 1 000 000 entries) of:
  "offset": 438272, "nbytes": 2506752, "hash": "...", "block_size": 32}
 ```
 
-- `dtype`: `f32`, `f16`, `bf16`, `i32`, `int8`, `int4`, `q4_k`, `q5_k`, `q6_k` (see
-  docs/spec/quant.md; the k-quants are ggml super-blocks of 256 elements, stored as in GGUF).
+- `dtype`: `f32`, `f16`, `bf16`, `i32`, `int8`, `int4`, `q4_k`, `q5_k`, `q6_k`, `mxfp4`,
+  `iq2_xxs`, `iq2_s`, `iq3_xxs` (see docs/spec/quant.md; the k-quants and i-quants are ggml
+  super-blocks of 256 elements, stored as in GGUF).
 - `block_size` (quantized dtypes only, omitted otherwise): elements per scale along the
   last axis. Writers always emit it; v1 supports only `32` — any other value is rejected
   with `unsupported`. A quantized entry without it (files from before the attribute) is
