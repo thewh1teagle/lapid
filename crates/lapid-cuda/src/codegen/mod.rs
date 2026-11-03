@@ -76,6 +76,8 @@ pub(crate) enum Key {
     TopK(Arc<TopKSpec>, bool),
     /// Merge stage of the split argmax (`TopK(_, true)` over several blocks per row).
     TopKMerge,
+    /// Top-k (k > 1) of short rows: rank per column by one scan of the row in shared memory.
+    TopKSmall(Arc<TopKSpec>),
     /// MatMulId as GEMV rows (few tokens): `Gemv` with per-row expert pointers.
     GemvId(Arc<MatMulSpec>, bool, bool, u32),
     /// MatMulId routing stage (rows grouped by expert into scratch).
@@ -97,7 +99,7 @@ impl Key {
             Key::Reduce(s, _) => s.in_dtypes.len(),
             Key::Gemm(s) | Key::GemmMma(s, ..) | Key::Gemv(s, ..) => 2 + s.extra_dtypes.len(),
             Key::Gather(_) | Key::GatherAxis(_) => 2,
-            Key::TopK(..) | Key::TopKMerge => 1,
+            Key::TopK(..) | Key::TopKMerge | Key::TopKSmall(_) => 1,
             Key::GemvId(..) | Key::MoeRoute | Key::GemmMmaId(..) => 3,
             Key::Gdn(..) => 6,
             Key::Softmax(_) | Key::Sinkhorn(_) => 1,
@@ -170,7 +172,7 @@ impl Key {
             Key::AttnMerge(_) => "attention_merge",
             Key::AttnMma(..) => "attention_mma",
             Key::GatherAxis(_) => "gather_axis",
-            Key::TopK(..) => "topk",
+            Key::TopK(..) | Key::TopKSmall(_) => "topk",
             Key::TopKMerge => "topk_merge",
             Key::GemvId(..) => "gemv_id",
             Key::MoeRoute => "moe_route",
@@ -269,6 +271,7 @@ pub(crate) fn source(key: &Key, _caps: &Caps) -> String {
         Key::GatherAxis(s) => index::source_gather_axis(s),
         Key::TopK(s, k1) => index::source_topk(s, *k1),
         Key::TopKMerge => index::source_topk_merge(),
+        Key::TopKSmall(s) => index::source_topk_small(s),
         Key::Sinkhorn(n) => sinkhorn::source(*n),
     }
 }

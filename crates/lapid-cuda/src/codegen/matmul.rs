@@ -25,6 +25,11 @@ pub(super) const OUT_BASE: usize = 13;
 pub(super) const EXTRA_BASE: usize = 16;
 /// Largest m served by the GEMV kernel.
 pub(super) const GEMV_MAX_M: usize = 4;
+/// Outputs (batch * m * n) up to which a transposed-B product whose GEMM grid would not
+/// fill the device runs as GEMV (a warp per output, k split across warps) instead: e.g.
+/// decode attention scores (64 heads x a few dozen keys x 512), a single 64 x 64 tile
+/// walking k alone otherwise.
+const GEMV_SMALL_OUT: usize = 4096;
 const TILE: usize = 64;
 
 pub(super) fn plan(spec: &Arc<MatMulSpec>, d: &MatMulDims, caps: &Caps) -> Result<Plan> {
@@ -56,7 +61,9 @@ pub(super) fn plan(spec: &Arc<MatMulSpec>, d: &MatMulDims, caps: &Caps) -> Resul
             d.k
         )));
     }
-    let gemv = spec.b_transposed && d.m <= GEMV_MAX_M;
+    let tiles = d.batch * d.m.div_ceil(TILE) * d.n.div_ceil(TILE);
+    let small = d.batch * d.m * d.n <= GEMV_SMALL_OUT && tiles < caps.multiprocessors as usize;
+    let gemv = spec.b_transposed && (d.m <= GEMV_MAX_M || small);
     let so = if quant {
         scales_offset(spec.b_dtype, d.n, d.k)
     } else {

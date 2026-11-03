@@ -218,7 +218,7 @@ fn topk_exact() {
     topk_case(DType::F32, 1, 7, 2, false);
     topk_case(DType::F32, 1, 16, 3, false);
     for dt in [DType::F32, DType::F16, DType::I32] {
-        for &(rows, cols) in &[(1usize, 1usize), (3, 7), (2, 1000), (1, 51865)] {
+        for &(rows, cols) in &[(1usize, 1usize), (3, 7), (2, 384), (2, 1000), (1, 1024), (1, 1025), (1, 51865)] {
             for k in [1usize, 2, 5, 64, 300] {
                 if k <= cols {
                     topk_case(dt, rows, cols, k, false);

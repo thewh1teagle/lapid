@@ -1,0 +1,83 @@
+// Top-k of short rows (cols <= {{MAXC}}), grid (rows, ceil(cols / 64)), 256 threads: every
+// block puts the row's order-preserving u32 keys in shared memory and ranks 64 of its
+// columns, 4 threads per column each scanning every 4th group of 4 keys:
+// rank = #{c2 : key2 > key or (key2 == key and c2 < c)}, summed over the quad; columns of
+// rank < k are written at their rank (value descending, ties by column ascending, as
+// `topk.ptx`).
+// Params: [rows, cols, k]
+.shared .align 16 .b32 keys[{{MAXC}}];
+
+.visible .entry lapid_main(
+{{ARGS}}
+)
+{
+    .reg .pred %p, %valid;
+    .reg .b32 %row, %cols, %k, %tx, %j, %e, %base, %key, %t, %rank, %c2, %d, %end, %part;
+    .reg .f32 %x;
+    .reg .b64 %a;
+{{PTRS}}
+    mov.u32 %row, %ctaid.x;
+    mov.u32 %tx, %tid.x;
+    ld.param.u32 %cols, [P+4];
+    ld.param.u32 %k, [P+8];
+    mul.lo.u32 %base, %row, %cols;
+    mov.u32 %j, %tx;
+LOAD_LOOP:
+    setp.ge.u32 %p, %j, %cols;
+    @%p bra LOADED;
+    add.u32 %e, %base, %j;
+{{LOAD}}
+{{KEY}}
+    mov.u32 %d, keys;
+    mad.lo.u32 %d, %j, 4, %d;
+    st.shared.u32 [%d], %key;
+    add.u32 %j, %j, 256;
+    bra LOAD_LOOP;
+LOADED:
+    // zero keys past the row up to a multiple of 16 (never > a key; == only past every
+    // column)
+    add.u32 %end, %cols, 15;
+    and.b32 %end, %end, -16;
+    add.u32 %j, %cols, %tx;
+    setp.lt.u32 %p, %j, %end;
+    mov.u32 %d, keys;
+    mad.lo.u32 %d, %j, 4, %d;
+    @%p st.shared.u32 [%d], 0;
+    barrier.sync 0;
+    // column of this quad (clamped: every lane joins the quad sum)
+    mov.u32 %j, %ctaid.y;
+    shr.u32 %t, %tx, 2;
+    mad.lo.u32 %j, %j, 64, %t;
+    setp.lt.u32 %valid, %j, %cols;
+    sub.u32 %t, %cols, 1;
+    min.u32 %j, %j, %t;
+    mov.u32 %d, keys;
+    mad.lo.u32 %t, %j, 4, %d;
+    ld.shared.u32 %key, [%t];
+    and.b32 %part, %tx, 3;
+    shl.b32 %c2, %part, 2;
+    mad.lo.u32 %d, %c2, 4, %d;
+    mov.u32 %rank, 0;
+SCAN:
+    setp.ge.u32 %p, %c2, %end;
+    @%p bra SCANNED;
+{{SCAN4}}
+    add.u32 %d, %d, 64;
+    add.u32 %c2, %c2, 16;
+    bra SCAN;
+SCANNED:
+    shfl.sync.bfly.b32 %t, %rank, 1, 31, -1;
+    add.u32 %rank, %rank, %t;
+    shfl.sync.bfly.b32 %t, %rank, 2, 31, -1;
+    add.u32 %rank, %rank, %t;
+    setp.lt.u32 %p, %rank, %k;
+    and.pred %p, %p, %valid;
+    setp.eq.and.u32 %p, %part, 0, %p;
+    @!%p bra DONE;
+    mad.lo.u32 %t, %row, %k, %rank;
+    mul.wide.u32 %a, %t, 4;
+    add.s64 %a, %a, %g_out;
+    st.global.u32 [%a], %j;
+DONE:
+    ret;
+}

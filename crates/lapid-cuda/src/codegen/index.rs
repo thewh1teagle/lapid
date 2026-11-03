@@ -1,5 +1,6 @@
 //! Index kernels: `GatherAxis` (take_along_axis, exact element copy) and `TopK` (k = 1:
-//! packed-u64 max reduction; k > 1: radix select + ordered collection + rank sort).
+//! packed-u64 max reduction; k > 1: radix select + ordered collection + rank sort, or for
+//! rows of up to `TOPK_SMALL_COLS` a rank per column in one scan, e.g. a MoE router).
 //! Out-of-range gather indices set the backend error flag (bound after the output, see
 //! `Key::uses_flag`); `execute` turns it into `Error("index_out_of_range")`.
 
@@ -16,6 +17,11 @@ const GATHER_AXIS: &str = include_str!("../kernels/gather_axis.ptx");
 const TOPK1: &str = include_str!("../kernels/topk1.ptx");
 const TOPK: &str = include_str!("../kernels/topk.ptx");
 const TOPK_MERGE: &str = include_str!("../kernels/topk_merge.ptx");
+const TOPK_SMALL: &str = include_str!("../kernels/topk_small.ptx");
+
+/// Longest row of the small top-k kernel (`Key::TopKSmall`: keys in shared memory, every
+/// column ranked by 4 threads scanning a quarter of the row each).
+const TOPK_SMALL_COLS: usize = 1024;
 
 /// Columns per block of the split argmax (rows longer than this use several blocks).
 const ARGMAX_CHUNK: usize = 8192;
@@ -58,6 +64,9 @@ pub(super) fn plan_topk(spec: &Arc<TopKSpec>, d: &TopKDims, caps: &Caps) -> Resu
     let grid = grid1(d.rows as u64, caps)?;
     let mut p = Params::default();
     p.u(d.rows)?.u(d.cols)?.u(d.k)?.u(numel)?;
+    if d.k > 1 && d.cols <= TOPK_SMALL_COLS {
+        return Ok(Plan::new(Key::TopKSmall(spec.clone()), p.0, [grid[0], d.cols.div_ceil(64) as u32, 1], 256));
+    }
     if d.k > 1 {
         return Ok(Plan::new(Key::TopK(spec.clone(), false), p.0, grid, 256));
     }
@@ -116,6 +125,44 @@ pub(super) fn source_topk_merge() -> String {
         g.op(format!("max.u64 %best, %best, {t}"));
     }
     template::fill(TOPK_MERGE, &[("ARGS", &args), ("PTRS", &ptrs), ("WARP_MAX", &g.finish())], &[])
+}
+
+/// One step of the small top-k rank scan: keys `%d[0..4]` (columns `%c2 + i`).
+fn scan4() -> String {
+    let mut g = Gen::new();
+    let k: Vec<String> = (0..4).map(|_| g.reg("b32")).collect();
+    let (c, gt, eq, lt) = (g.reg("b32"), g.reg("pred"), g.reg("pred"), g.reg("pred"));
+    g.op(format!("ld.shared.v4.u32 {{{}, {}, {}, {}}}, [%d]", k[0], k[1], k[2], k[3]));
+    for (i, ki) in k.iter().enumerate() {
+        g.op(format!("add.u32 {c}, %c2, {i}"));
+        g.op(format!("setp.gt.u32 {gt}, {ki}, %key"));
+        g.op(format!("setp.eq.u32 {eq}, {ki}, %key"));
+        g.op(format!("setp.lt.u32 {lt}, {c}, %j"));
+        g.op(format!("and.pred {eq}, {eq}, {lt}"));
+        g.op(format!("or.pred {gt}, {gt}, {eq}"));
+        g.op(format!("@{gt} add.u32 %rank, %rank, 1"));
+    }
+    g.finish()
+}
+
+pub(super) fn source_topk_small(spec: &TopKSpec) -> String {
+    let (args, ptrs) = ptx::args(&["x", "out"]);
+    let mut l = Gen::new();
+    ptx::load(&mut l, spec.in_dtype, "%g_x", "%e", "%x", true);
+    let mut kg = Gen::new();
+    key(&mut kg, "%x", "%key");
+    template::fill(
+        TOPK_SMALL,
+        &[
+            ("ARGS", &args),
+            ("PTRS", &ptrs),
+            ("MAXC", &TOPK_SMALL_COLS.to_string()),
+            ("LOAD", &l.finish()),
+            ("KEY", &kg.finish()),
+            ("SCAN4", &scan4()),
+        ],
+        &[],
+    )
 }
 
 pub(super) fn source_topk(spec: &TopKSpec, k1: bool) -> String {

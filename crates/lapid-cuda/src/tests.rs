@@ -344,6 +344,7 @@ fn all_keys() -> Vec<Key> {
         keys.push(Key::GatherAxis(Arc::new(GatherAxisSpec { dtype: t })));
         keys.push(Key::TopK(Arc::new(TopKSpec { in_dtype: t }), true));
         keys.push(Key::TopK(Arc::new(TopKSpec { in_dtype: t }), false));
+        keys.push(Key::TopKSmall(Arc::new(TopKSpec { in_dtype: t })));
     }
     keys.push(Key::TopKMerge);
     for s in [mat_spec(F32, Q6K, true, vec![], None), mat_spec(F16, Int4, true, vec![], None)] {

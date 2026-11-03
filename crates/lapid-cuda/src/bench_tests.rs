@@ -325,6 +325,21 @@ fn cases() -> Vec<Case> {
         v.push(c);
     }
     v.push(copy_case(256 << 20));
+    for (m, n, k) in [(64, 40, 512), (17, 24, 20480)] {
+        let mut c = matmul_case(m, n, k, DType::F32, None);
+        c.name = format!("ds41 {}", c.name);
+        v.push(c);
+    }
+    let spec = Arc::new(TopKSpec { in_dtype: DType::F32 });
+    v.push(Case {
+        name: "ds41 topk 1x384 k6".into(),
+        launch: Launch { kernel: Kernel::TopK(spec, TopKDims { rows: 1, cols: 384, k: 6 }), inputs: vec![0], output: 1 },
+        cold: vec![],
+        init: vec![],
+        flops: 0.0,
+        bytes: 384.0 * 4.0,
+        sizes: vec![384 * 4, 6 * 4],
+    });
     for count in [1, 2048] {
         let d = SinkhornDims { count, n: 4, iters: 20, eps: 1e-6f32.to_bits() };
         v.push(Case {

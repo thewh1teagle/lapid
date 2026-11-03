@@ -116,6 +116,9 @@ fn attention_mma_f32_precise() {
 fn matmul_f32_exact_large_k() {
     let Some(be) = cuda() else { return };
     matmul_case(&be, DType::F32, DType::F32, true, 1, 64, 256, 4096, 1e-5);
+    // small outputs over long k: GEMV path (decode attention scores, mHC mixes of a chunk)
+    matmul_case(&be, DType::F32, DType::F32, true, 1, 64, 40, 512, 1e-5);
+    matmul_case(&be, DType::F32, DType::F32, true, 1, 17, 24, 20480, 1e-5);
     matmul_case(&be, DType::F32, DType::F32, true, 1, 1, 512, 4096, 1e-5);
     matmul_case(&be, DType::F32, DType::F32, false, 1, 20, 96, 4096, 1e-5);
 }
