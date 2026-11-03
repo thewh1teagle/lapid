@@ -104,7 +104,7 @@ impl LapidFile {
         if f.streams {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             crate::log::emit(&format!(
-                "[lapid] {}: {:.1} GiB of weights, {:.1} GiB available: streaming weights from the file (mmap; LAPID_MMAP=0 / --no-mmap to upload)",
+                "[lapid] {}: {:.1} GiB of weights, {:.1} GiB available: weights do not fit, reading them from the file on demand (mmap)",
                 path.display(),
                 gb(f.weight_bytes()),
                 gb(residency::available_memory().unwrap_or(0)),
