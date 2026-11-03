@@ -1,6 +1,7 @@
 //! The kernel suite of `lapid kernels dump` / `lapid bench kernels`: small graphs built from
 //! lapid primitives at typical transformer shapes (decode GEMV, prefill GEMM in fp16 / int8 /
-//! int4, attention, softmax, layer norm, fused elementwise). Generic: no model code.
+//! int4, attention, softmax, layer norm, fused elementwise, and large-MoE expert shapes in
+//! the block formats mxfp4 / iq2_xxs / iq2_s / iq3_xxs). Generic: no model code.
 
 use std::sync::Arc;
 
@@ -39,6 +40,53 @@ fn weight(rows: usize, cols: usize, dtype: DType, seed: u64) -> Result<Tensor> {
         _ => return f32_tensor(&[rows, cols], seed),
     };
     Tensor::from_host(HostData::new(Arc::new(bytes)), &[rows, cols], dtype)
+}
+
+/// `count` stacked `[rows, cols]` matrices of an AoS block format (mxfp4, i-quants) with
+/// random quants and sane scales (no quantizer run: these are timing inputs).
+fn block_weight(count: usize, rows: usize, cols: usize, dtype: DType, seed: u64) -> Result<Tensor> {
+    let shape = [count, rows, cols];
+    let mut s = seed | 1;
+    let mut bytes: Vec<u8> = (0..dtype.storage_bytes(&shape))
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 32) as u8
+        })
+        .collect();
+    let f = dtype.quant_format().expect("block format");
+    let one = lapid::quant::layout(f, rows, cols);
+    for m in bytes.chunks_exact_mut(one.total) {
+        for b in m[..one.qs_bytes].chunks_exact_mut(f.block_bytes()) {
+            if dtype == DType::Mxfp4 {
+                b[0] = 120;
+            } else {
+                b[..2].copy_from_slice(&half::f16::from_f32(0.01).to_le_bytes());
+            }
+        }
+    }
+    let shape: &[usize] = if count == 1 { &shape[1..] } else { &shape };
+    Tensor::from_host(HostData::new(Arc::new(bytes)), shape, dtype)
+}
+
+/// Decode-time expert matmul: one token through `r` of `e` experts `[n, k]` (MatMulId), or a
+/// plain GEMV (`e == 0`). Bytes: the weights read (the routed experts only) plus activations.
+fn expert(name: &str, r: usize, e: usize, n: usize, k: usize, dtype: DType) -> Result<Case> {
+    let x = f32_tensor(&[1, k], 1)?;
+    let (y, mats) = if e == 0 {
+        (x.matmul_t(&block_weight(1, n, k, dtype, 2)?)?, 1)
+    } else {
+        let ids: Vec<i32> = (0..r).map(|i| (i * 5 % e) as i32).collect();
+        let ids = Tensor::from_i32(&ids, &[1, r])?;
+        (x.matmul_id(&block_weight(e, n, k, dtype, 2)?, &ids)?, r)
+    };
+    Ok(Case {
+        name: format!("{name} {}x{k}x{n} {}", mats, dtype.name()),
+        outputs: vec![y],
+        flops: 2.0 * (mats * k * n) as f64,
+        bytes: mats as f64 * weight_bytes(n, k, dtype) + 4.0 * (k + mats * n) as f64,
+    })
 }
 
 fn weight_bytes(rows: usize, cols: usize, dtype: DType) -> f64 {
@@ -97,6 +145,14 @@ pub fn cases(filter: Option<&str>) -> Result<Vec<Case>> {
         x.layer_norm(&w, &b, 1e-5)
     })?);
     out.push(rows_case("gelu-mul", 512, 4096, |x| x.gelu()?.mul(x))?);
+    // DeepSeek-V4.1-sized routed experts (hidden 5120, expert ffn 2304, top-6 of a 32-slot
+    // stack), the block formats a large MoE is stored in
+    for dtype in [DType::Mxfp4, DType::Iq2Xxs, DType::Iq2S, DType::Iq3Xxs] {
+        for (n, k) in [(2304, 5120), (5120, 2304)] {
+            out.push(expert("expert-gemv", 1, 0, n, k, dtype)?);
+            out.push(expert("expert-moe-r6-e32", 6, 32, n, k, dtype)?);
+        }
+    }
     out.retain(|c| filter.is_none_or(|f| c.name.contains(f)));
     Ok(out)
 }

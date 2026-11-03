@@ -119,33 +119,87 @@ pub(crate) unsafe fn tile_scalar<const R: usize>(a: &KA, rows: [usize; R], b: &K
     acc
 }
 
-/// aarch64 `sdot` tile.
+/// Byte masks of sign bytes: entry s has byte j = 0xff when bit j of s is set.
+#[cfg(target_arch = "aarch64")]
+static MASK8: [u64; 256] = mask8();
+/// `MASK8[KSIGNS[i]]`: masks of the 7 stored sign bits plus their parity bit.
+#[cfg(target_arch = "aarch64")]
+static MASK7: [u64; 128] = mask7();
+
+#[cfg(target_arch = "aarch64")]
+const fn mask8() -> [u64; 256] {
+    let mut t = [0u64; 256];
+    let mut s = 0;
+    while s < 256 {
+        let mut j = 0;
+        while j < 8 {
+            if (s >> j) & 1 != 0 {
+                t[s] |= 0xff << (8 * j);
+            }
+            j += 1;
+        }
+        s += 1;
+    }
+    t
+}
+
+#[cfg(target_arch = "aarch64")]
+const fn mask7() -> [u64; 128] {
+    let m = mask8();
+    let mut t = [0u64; 128];
+    let mut i = 0;
+    while i < 128 {
+        t[i] = m[(i as u32 | ((i as u32).count_ones() & 1) << 7) as usize];
+        i += 1;
+    }
+    t
+}
+
+/// aarch64 `sdot` tile, dispatched on the format.
+///
+/// # Safety
+/// Same contract as `kquant::KTile1`; requires dotprod.
+#[cfg(target_arch = "aarch64")]
+pub(crate) unsafe fn tile_sdot<const R: usize>(a: &KA, rows: [usize; R], b: &KMat, cols: [usize; 4]) -> [[f32; 4]; R] {
+    // SAFETY: forwarded contract.
+    unsafe {
+        match b.fmt {
+            Format::Iq2Xxs => tile_sdot_f::<R, 0>(a, rows, b, cols),
+            Format::Iq2S => tile_sdot_f::<R, 1>(a, rows, b, cols),
+            _ => tile_sdot_f::<R, 2>(a, rows, b, cols),
+        }
+    }
+}
+
+/// `tile_sdot` for format `F` (0 IQ2_XXS, 1 IQ2_S, 2 IQ3_XXS): each 32-element sub-block is
+/// decoded once into two vectors of signed weights `(g ^ m) - m` (grid rows by index, sign
+/// byte masks from `MASK7` / `MASK8`) and two half scales, then dotted with every row.
 ///
 /// # Safety
 /// Same contract as `kquant::KTile1`; requires dotprod.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub(crate) unsafe fn tile_sdot<const R: usize>(a: &KA, rows: [usize; R], b: &KMat, cols: [usize; 4]) -> [[f32; 4]; R] {
+unsafe fn tile_sdot_f<const R: usize, const F: u8>(a: &KA, rows: [usize; R], b: &KMat, cols: [usize; 4]) -> [[f32; 4]; R] {
     use std::arch::aarch64::*;
     let k = a.k;
     let nblk = k / QK;
     let kg = k / 32;
-    let fmt = b.fmt;
+    let bb = b.fmt.block_bytes();
     let mut out = [[0f32; 4]; R];
-    // SAFETY: indices validated by the caller (see `KTile1`): blocks come from row `cols[c]`
-    // via `KMat::block`, activation loads stay in row `rows[r]` (k int8, k / 32 scales).
+    // SAFETY: indices validated by the caller (see `KTile1`): every block read lies in row
+    // `cols[c]` (`nblk` blocks of `bb` bytes), table indices are bounded by construction
+    // (u8 / 7-bit / 10-bit fields into 256 / 128 / 1024-entry tables), activation loads stay
+    // in row `rows[r]` (k int8, k / 32 scales).
     unsafe {
         let zero = vdupq_n_s32(0);
-        let bits = vreinterpretq_u8_u64(vdupq_n_u64(0x8040_2010_0804_0201));
-        // 16 signed weights of 8-groups j, j + 1
-        let dec = |bb: &[u8], j: usize| -> int8x16_t {
-            let (g0, s0) = group8(fmt, bb, j);
-            let (g1, s1) = group8(fmt, bb, j + 1);
-            let g = vreinterpretq_s8_u64(vcombine_u64(vcreate_u64(g0), vcreate_u64(g1)));
-            let s = vcombine_u8(vdup_n_u8(s0), vdup_n_u8(s1));
-            let m = vreinterpretq_s8_u8(vtstq_u8(s, bits));
+        let u32_at = |p: *const u8| -> u32 { u32::from_le(std::ptr::read_unaligned(p.cast::<u32>())) };
+        let signed = |g: [u64; 2], m: [u64; 2]| -> int8x16_t {
+            let g = vreinterpretq_s8_u64(vcombine_u64(vcreate_u64(g[0]), vcreate_u64(g[1])));
+            let m = vreinterpretq_s8_u64(vcombine_u64(vcreate_u64(m[0]), vcreate_u64(m[1])));
             vsubq_s8(veorq_s8(g, m), m)
         };
+        let g2 = |t: &[u64], i: usize| *t.get_unchecked(i);
+        let g3 = |i: u8| u64::from(*IQ3XXS_GRID.get_unchecked(usize::from(i)));
         for c in 0..4 {
             if c > 0 && cols[c] == cols[c - 1] {
                 for o in out.iter_mut() {
@@ -153,21 +207,49 @@ pub(crate) unsafe fn tile_sdot<const R: usize>(a: &KA, rows: [usize; R], b: &KMa
                 }
                 continue;
             }
+            let row = b.bytes.as_ptr().add(cols[c] * nblk * bb);
             let mut acc = [vdupq_n_f32(0.0); R];
             for blk in 0..nblk {
-                let bb = b.block(cols[c], blk);
-                let sc = half_scales(fmt, bb);
+                let p = row.add(blk * bb);
+                let d = f16_bits_to_f32(u16::from_le(std::ptr::read_unaligned(p.cast::<u16>())));
                 for ib in 0..8 {
-                    let w = [dec(bb, 4 * ib), dec(bb, 4 * ib + 2)];
-                    let sv = vcombine_f32(vdup_n_f32(sc[2 * ib]), vdup_n_f32(sc[2 * ib + 1]));
+                    // two vectors of 16 signed weights and the two half scales
+                    let (w, sc) = match F {
+                        0 => {
+                            let q = p.add(2 + 8 * ib);
+                            let aux = u32_at(q.add(4));
+                            let gi = |l: usize| g2(&IQ2XXS_GRID, usize::from(*q.add(l)));
+                            let mi = |l: usize| *MASK7.get_unchecked(((aux >> (7 * l)) & 127) as usize);
+                            let x = d * (0.5 + (aux >> 28) as f32) * 0.25;
+                            ([signed([gi(0), gi(1)], [mi(0), mi(1)]), signed([gi(2), gi(3)], [mi(2), mi(3)])], [x, x])
+                        }
+                        1 => {
+                            let (qs, sg) = (p.add(2 + 4 * ib), p.add(34 + 4 * ib));
+                            let qh = u32::from(*p.add(66 + ib));
+                            let s = *p.add(74 + ib);
+                            let gi = |l: usize| g2(&IQ2S_GRID, usize::from(*qs.add(l)) | ((qh << (8 - 2 * l) as u32) & 0x300) as usize);
+                            let mi = |l: usize| *MASK8.get_unchecked(usize::from(*sg.add(l)));
+                            let x = [d * (0.5 + (s & 15) as f32) * 0.25, d * (0.5 + (s >> 4) as f32) * 0.25];
+                            ([signed([gi(0), gi(1)], [mi(0), mi(1)]), signed([gi(2), gi(3)], [mi(2), mi(3)])], x)
+                        }
+                        _ => {
+                            let q = p.add(2 + 8 * ib);
+                            let aux = u32_at(p.add(66 + 4 * ib));
+                            let gi = |l: usize| g3(*q.add(2 * l)) | (g3(*q.add(2 * l + 1)) << 32);
+                            let mi = |l: usize| *MASK7.get_unchecked(((aux >> (7 * l)) & 127) as usize);
+                            let x = d * (0.5 + (aux >> 28) as f32) * 0.5;
+                            ([signed([gi(0), gi(1)], [mi(0), mi(1)]), signed([gi(2), gi(3)], [mi(2), mi(3)])], [x, x])
+                        }
+                    };
+                    let sv = vcombine_f32(vdup_n_f32(sc[0]), vdup_n_f32(sc[1]));
                     for r in 0..R {
                         let ap = a.q.as_ptr().add(rows[r] * k + blk * QK + 32 * ib);
                         let d0 = vdotq_s32(zero, vld1q_s8(ap), w[0]);
                         let d1 = vdotq_s32(zero, vld1q_s8(ap.add(16)), w[1]);
-                        // lanes [sum d0 (pairs), sum d1 (pairs)] -> per half after one more add
-                        let p = vpaddq_s32(d0, d1);
+                        // lanes [half 0, half 0, half 1, half 1]
+                        let pr = vpaddq_s32(d0, d1);
                         let da = *a.s.get_unchecked(rows[r] * kg + blk * 8 + ib);
-                        acc[r] = vfmaq_f32(acc[r], vcvtq_f32_s32(p), vmulq_n_f32(sv, da));
+                        acc[r] = vfmaq_f32(acc[r], vcvtq_f32_s32(pr), vmulq_n_f32(sv, da));
                     }
                 }
             }

@@ -144,6 +144,9 @@ fn kbench_gemv() {
     for fmt in [Format::Mxfp4, Format::Iq2Xxs, Format::Iq2S, Format::Iq3Xxs] {
         shapes.extend([(2304, 5120, fmt), (5120, 2304, fmt)]);
     }
+    // KB_FILTER: only shapes whose "<format> <n>x<k>" label contains it
+    let filter = std::env::var("KB_FILTER").unwrap_or_default();
+    shapes.retain(|(n, k, fmt)| format!("{fmt:?} {n}x{k}").contains(&filter));
     for m in [1usize, 2] {
         for &(n, k, fmt) in &shapes {
             let a = be.upload(bytemuck::cast_slice(&rnd(m * k, 3))).unwrap();
