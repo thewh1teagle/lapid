@@ -84,7 +84,11 @@ impl Deepseek41Model {
             let m = self.layers[p.layer].moe.forward_cached(cache, &p.x, ids, &p.w)?;
             expand(&m, x, &p.post, &p.comb)
         };
-        let speculate = cache.speculative();
+        // Prompt chunks only: their tokens' guesses cover most of the next layer's union
+        // (~85% of the misses of a 600-token chunk, ~87% of the reads used), and disk time is
+        // what a chunk waits for. Decode guesses are right for about half the misses but cost
+        // an extra router and sync per layer and compete with the reads waited for: slower.
+        let speculate = cache.speculative() && n > 1;
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some((p, host_ids)) = pending.take() {
                 let li = p.layer;
@@ -111,7 +115,7 @@ impl Deepseek41Model {
             // streams change little per layer), read in the background while this layer's
             // experts load and the device runs.
             let mut guess = match self.layers.get(i + 1) {
-                Some(nl) if speculate => Some(nl.moe.route(&nl.ffn_norm.forward(&c)?.cast(DType::F32)?)?.0),
+                Some(nl) if speculate => Some(nl.moe.guess(&nl.ffn_norm.forward(&c)?.cast(DType::F32)?, self.cfg.top_k)?),
                 _ => None,
             };
             let mut p = Pending { layer: i, x: xn, ids: route_ids, w, post: fm.post, comb: fm.comb };

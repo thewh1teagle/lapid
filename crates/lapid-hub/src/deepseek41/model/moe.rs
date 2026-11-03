@@ -50,6 +50,12 @@ impl Moe {
         Ok((ids, w.mul_scalar(f64::from(self.route_scale))?)) // [n, k]
     }
 
+    /// The `k` experts `x [n, D]` (f32) ranks first per token (`[n, k]` i32): a guess of
+    /// the choice of [`route`](Self::route) from another layer's input.
+    pub fn guess(&self, x: &Tensor, k: usize) -> Result<Tensor> {
+        softplus(&x.matmul_t(&self.router)?)?.sqrt()?.add(&self.bias)?.topk_indices(k.min(self.bias.shape()[0]), 1)
+    }
+
     /// The shared expert (same clamped SwiGLU, always on).
     fn shared(&self, x: &Tensor) -> Result<Tensor> {
         let [w1, w3, w2] = &self.shared;

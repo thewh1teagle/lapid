@@ -160,6 +160,24 @@ impl IoPool {
         self.push(jobs, false);
     }
 
+    /// Release ([`Advice::Release`]) the pages of `ranges` on an I/O thread, ahead of
+    /// queued prefetches (it frees memory for them) and off the caller's path.
+    pub fn release(&self, ranges: Vec<(HostData, Range<usize>)>) {
+        if ranges.is_empty() {
+            return;
+        }
+        let job: Job = Box::new(move || {
+            for (h, r) in ranges {
+                let _ = lapid::residency::advise_host(&h, Some(r), Advice::Release);
+            }
+        });
+        if self.threads == 0 {
+            job();
+        } else {
+            self.push(vec![job], true);
+        }
+    }
+
     /// Drop the queued background reads (e.g. the guesses of a forward that has ended).
     pub fn cancel_background(&self) {
         self.shared.lock().background.clear();

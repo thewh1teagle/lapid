@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use lapid::{Advice, Device, Error, Op, Result, Tensor};
+use lapid::{Device, Error, Op, Result, Tensor};
 
 use super::expert_io::IoPool;
 use super::moe::{Experts, GateUp};
@@ -423,15 +423,14 @@ impl ExpertCache {
             let src = self.source(k, key)?;
             let t = Instant::now();
             self.device.write(&self.kinds[k].pool, slot as usize * self.kinds[k].bytes, src)?;
-            // The pool holds it now (`write` returns once the bytes are staged): free its
-            // page-cache copy rather than have the kernel reclaim memory under pressure for
-            // the next reads (a prompt streams every expert of every layer).
-            let (h, r) = &ranges[i];
-            lapid::residency::advise_host(h, Some(r.clone()), Advice::Release)?;
             write += t.elapsed();
             bytes += src.len() as u64;
             Ok(())
         })?;
+        // The pool holds them now (`write` returns once the bytes are staged): unmap their
+        // pages so that the kernel reclaims them cheaply for the next reads (a prompt streams
+        // every expert of every layer through far less free memory).
+        self.io.release(ranges);
         Ok((t0.elapsed().saturating_sub(write), write, bytes))
     }
 
