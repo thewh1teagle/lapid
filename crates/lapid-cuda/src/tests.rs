@@ -685,3 +685,4 @@ fn softmax_and_layer_norm() {
         );
     }
 }
+

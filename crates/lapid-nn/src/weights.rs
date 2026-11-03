@@ -41,6 +41,17 @@ impl<'a> Loader<'a> {
         self.device.upload(&t)
     }
 
+    /// Weight `name` as a host leaf, never copied to the device: the file's (mmap'd) bytes
+    /// as stored, or dequantized to f32 for the fake-quant precisions. For weights a model
+    /// moves to the device itself, e.g. MoE expert stacks read through an
+    /// [`ExpertCache`](crate::llm::expert_cache::ExpertCache).
+    pub fn host_tensor_checked(&self, name: &str, shape: &[usize]) -> Result<Tensor> {
+        let t = self.file.get(name)?;
+        let t = if self.precision != Precision::Stored && t.dtype().is_quant() { dequantized(self.file, name, &t)? } else { t };
+        self.expect_shape(&t, name, shape)?;
+        Ok(t)
+    }
+
     /// Whether the file has a tensor `name`.
     pub fn contains(&self, name: &str) -> bool {
         self.file.get(name).is_ok()

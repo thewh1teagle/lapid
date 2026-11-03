@@ -19,6 +19,15 @@ pub trait Backend: Send + Sync {
     fn map_host(&self, _host: &HostData) -> Result<Option<DeviceData>> {
         Ok(None)
     }
+    /// Overwrite bytes `offset..offset + bytes.len()` of an existing (writable, not mapped)
+    /// buffer, e.g. one slot of a device-resident expert cache. `bytes` may be reused when
+    /// it returns and is read by the host, never by the device in place (file-backed memory
+    /// is fine); the device side may still be in flight, ordered before every later
+    /// `execute` / `download`. Must not be called while an `execute` reading the buffer runs.
+    /// Default: `unsupported`.
+    fn write(&self, _buf: &DeviceData, _offset: usize, _bytes: &[u8]) -> Result<()> {
+        Err(lapid_tensor::Error::new("unsupported", format!("{}: writing into device buffers is not supported", self.name())))
+    }
     /// Copy back to host (waits for pending work).
     fn download(&self, buf: &DeviceData) -> Result<Vec<u8>>;
     /// Copy the first `out.len()` bytes back into `out` (waits for pending work), e.g. into

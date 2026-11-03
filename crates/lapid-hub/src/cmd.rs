@@ -29,6 +29,11 @@ fn unknown(model: &str) -> lapid::Error {
 }
 
 /// Verify `model` against a reference directory (default: the model's own). Check `"ok"`.
+/// Device memory (GiB) for MoE experts that do not fit in memory (CLI `--expert-cache`).
+pub fn set_expert_cache_gib(gib: f64) {
+    lapid_nn::llm::expert_cache::set_budget_gib(gib);
+}
+
 pub fn verify(model: &str, reference: Option<&Path>, args: &ModelArgs) -> Result<Value> {
     if let Some(e) = crate::runtime::registry::find(model) {
         return (e.verify)(reference, args);

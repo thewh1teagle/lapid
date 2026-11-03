@@ -384,6 +384,18 @@ impl Runtime {
         Ok((buffers, t_resolve, t_exec))
     }
 
+    pub(crate) fn alloc(&self, shape: &[usize], dtype: DType) -> Result<Tensor> {
+        let bytes = storage_bytes(shape, dtype)?;
+        Ok(Tensor::from_device(self.backend.alloc(bytes.max(4))?, shape, dtype))
+    }
+
+    pub(crate) fn write(&self, t: &Tensor, offset: usize, bytes: &[u8]) -> Result<()> {
+        match t.op() {
+            Op::Device(d) if self.owns(d) => self.backend.write(d, offset, bytes),
+            _ => bail!("invalid_argument", "write: not a device tensor of this {} device", self.backend.name()),
+        }
+    }
+
     /// Upload a host leaf now (cached), or realize anything else on this device.
     pub(crate) fn upload(&self, t: &Tensor) -> Result<Tensor> {
         match t.op() {
@@ -477,12 +489,15 @@ impl Runtime {
 
 /// Storage size of `t`, validated so quantized shapes never panic.
 fn expected_bytes(t: &Tensor) -> Result<usize> {
-    let dt = t.dtype();
+    storage_bytes(t.shape(), t.dtype())
+}
+
+fn storage_bytes(shape: &[usize], dt: DType) -> Result<usize> {
     let block = dt.quant_format().map_or(DType::QUANT_GROUP, |f| f.block_elems());
-    if dt.is_quant() && (!(2..=3).contains(&t.rank()) || t.shape()[t.rank() - 1] % block != 0) {
-        bail!("shape_mismatch", "quantized {} tensor has invalid shape {:?}", dt.name(), t.shape());
+    if dt.is_quant() && (!(2..=3).contains(&shape.len()) || !shape[shape.len() - 1].is_multiple_of(block)) {
+        bail!("shape_mismatch", "quantized {} tensor has invalid shape {:?}", dt.name(), shape);
     }
-    Ok(dt.storage_bytes(t.shape()))
+    Ok(dt.storage_bytes(shape))
 }
 
 /// Download a buffer owned by another backend through a live runtime of that backend.

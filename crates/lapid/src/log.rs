@@ -20,7 +20,8 @@ pub fn set_log_hook(hook: Option<LogHook>) {
     }
 }
 
-pub(crate) fn emit(msg: &str) {
+/// Write one diagnostic message (to the hook, else stderr).
+pub fn emit(msg: &str) {
     let hook = match HOOK.read() {
         Ok(g) => g.clone(),
         Err(p) => p.into_inner().clone(),

@@ -19,9 +19,11 @@ pub(crate) mod compress;
 pub(crate) mod index;
 mod load;
 pub(crate) mod moe;
+mod staged;
 
-use lapid::{DType, Error, Result, Tensor};
+use lapid::{DType, Device, Error, Result, Tensor};
 use lapid_nn::llm::engram::{EngramGate, Fp8Rows, NgramHash};
+use lapid_nn::llm::expert_cache::ExpertCache;
 use lapid_nn::llm::hyper::{SinkhornHc, collapse, expand};
 use lapid_nn::{Embedding, Linear, Loader, RmsNorm};
 use serde_json::Value;
@@ -109,9 +111,30 @@ pub struct Deepseek41Model {
     norm: RmsNorm,
     hash: Option<NgramHash>,
     layers: Vec<Layer>,
+    /// Routed experts that do not fit in memory (`None`: graph leaves).
+    cache: Option<ExpertCache>,
+    device: Device,
+    /// Held by a cached forward: one at a time uses the cache's slots.
+    lock: std::sync::Mutex<()>,
+    /// Prompt tokens per forward (larger with the cache: every chunk reads the union of its
+    /// tokens' experts, nearly all of them, so fewer chunks read less).
+    prefill_chunk: usize,
 }
 
 impl Deepseek41Model {
+    /// The device expert cache, when the routed experts do not fit in memory.
+    pub fn expert_cache(&self) -> Option<&ExpertCache> {
+        self.cache.as_ref()
+    }
+
+    /// Start reading the Engram rows of `ids` into the page cache before the layers run.
+    fn prefetch_engram(&self, ids: &[u32], history: &[i64]) {
+        let Some(hash) = &self.hash else { return };
+        for e in self.layers.iter().filter_map(|l| l.engram.as_ref()) {
+            e.table.prefetch(&hash.rows(e.module, history, ids));
+        }
+    }
+
     /// Streams after layer `i`'s Engram: the hashed rows of `ids` gathered from its table.
     fn engram(&self, e: &Engram, x: &Tensor, ids: &[u32], history: &[i64]) -> Result<Tensor> {
         let hash = self.hash.as_ref().ok_or_else(|| Error::new("internal", "deepseek41: engram layer without hash constants"))?;
@@ -121,6 +144,22 @@ impl Deepseek41Model {
         let rows = Tensor::from_f32(&v, &[ids.len(), hash.cols() * e.table.dim()])?;
         e.gate.forward(x, &rows)
     }
+}
+
+/// Stage the layer states of a forward (the slots that changed) and the Engram look-back.
+fn stage(st: &mut State, next: Vec<LayerState>, ids: &[u32], hash: Option<&NgramHash>) {
+    st.staged.clear();
+    for (i, (old, new)) in st.layers.iter().zip(&next).enumerate() {
+        for (j, (o, nw)) in old.slots().into_iter().zip(new.slots()).enumerate() {
+            if let Some(t) = nw
+                && o.is_none_or(|o| o.id() != t.id())
+            {
+                st.staged.push((i, j, t.clone()));
+            }
+        }
+    }
+    let history = hash.map_or_else(Vec::new, |h| h.next_history(&st.history, ids));
+    st.next = Some((next, history));
 }
 
 impl CausalLm for Deepseek41Model {
@@ -143,6 +182,10 @@ impl CausalLm for Deepseek41Model {
         &[encoding::EOS]
     }
 
+    fn prefill_chunk(&self) -> usize {
+        self.prefill_chunk
+    }
+
     /// V4.1 ships no Jinja template: prompts are the upstream `encoding/encoding.py` format.
     fn render_prompt(&self, messages_json: &str, tools_json: Option<&str>, _add_generation_prompt: bool, opts: &ChatOptions) -> Option<Result<String>> {
         Some(encoding::render_json(messages_json, tools_json, opts.enable_thinking.unwrap_or(false), None))
@@ -153,6 +196,10 @@ impl CausalLm for Deepseek41Model {
     fn forward(&self, ids: &[u32], st: &mut State, rows: Rows, taps: &mut Taps) -> Result<Option<Tensor>> {
         if ids.is_empty() {
             return Err(Error::new("invalid_argument", "deepseek41: forward of zero tokens"));
+        }
+        self.prefetch_engram(ids, &st.history);
+        if let Some(cache) = &self.cache {
+            return self.forward_cached(cache, ids, st, rows, taps);
         }
         let (n, d, hc) = (ids.len(), self.cfg.hidden_size, self.cfg.hc_mult);
         let pos = st.pos;
@@ -183,18 +230,7 @@ impl CausalLm for Deepseek41Model {
                 taps.tap(format_args!("layers.{i}"), &x.reshape(&[n, hc * d])?);
             }
         }
-        st.staged.clear();
-        for (i, (old, new)) in st.layers.iter().zip(&next).enumerate() {
-            for (j, (o, nw)) in old.slots().into_iter().zip(new.slots()).enumerate() {
-                if let Some(t) = nw
-                    && o.is_none_or(|o| o.id() != t.id())
-                {
-                    st.staged.push((i, j, t.clone()));
-                }
-            }
-        }
-        let history = self.hash.as_ref().map_or_else(Vec::new, |h| h.next_history(&st.history, ids));
-        st.next = Some((next, history));
+        stage(st, next, ids, self.hash.as_ref());
         let pre = pre.ok_or_else(|| Error::new("internal", "deepseek41: no layers"))?;
         let (x, pre) = match rows {
             Rows::None => return Ok(None),
@@ -208,3 +244,5 @@ impl CausalLm for Deepseek41Model {
         Ok(Some(self.head.forward(&h)?))
     }
 }
+#[cfg(test)]
+mod bench_tests;

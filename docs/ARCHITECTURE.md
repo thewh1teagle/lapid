@@ -70,6 +70,13 @@ kernel serves every shape: e.g. a growing KV cache never recompiles.
   read in place from the mmap (`--mmap`, `LAPID_MMAP=1`; automatic when the model does not fit):
   the page cache streams them from disk. GPUs that read host memory through the host page tables
   get the host pointer; the pages a GPU eval reads are re-mapped and locked around it.
+- **Expert cache:** MoE experts that do not fit stay in the file and never become graph leaves.
+  A device pool of expert slots, shared by all layers, is filled by the host from the mapping
+  (parallel reads, then staged copies: a GPU never reads file pages in place) with a
+  frequency-aware replacement policy; the model reads each layer's routing to the host,
+  makes those experts resident, and runs the expert matmuls on the pool with slot ids. Its
+  size is what is available after the other weights minus a large headroom (or set
+  explicitly); the dense weights of such a model are always copied to the device.
 - **Quantization:** `int8` / `int4` with a per-block scale; block size is an attribute of the tensor.
 - **Import:** generic readers (safetensors, …); each model's conversion lives with the model.
 

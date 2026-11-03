@@ -182,6 +182,21 @@ impl Device {
         self.rt.upload(t)
     }
 
+    /// A new device tensor of `shape` / `dtype` with unspecified contents (fill it with
+    /// [`Device::write`]), e.g. the slot pool of an expert cache.
+    pub fn alloc(&self, shape: &[usize], dtype: lapid_tensor::DType) -> Result<Tensor> {
+        self.rt.alloc(shape, dtype)
+    }
+
+    /// Overwrite bytes `offset..offset + bytes.len()` of the storage of a device tensor
+    /// made by this device (e.g. [`Device::alloc`]), waiting for the copy. `bytes` is read
+    /// by the host (file-backed memory is fine: the device never reads it in place).
+    /// Graphs evaluated earlier have completed; later ones see the new bytes.
+    /// Error `unsupported` on backends without in-place writes.
+    pub fn write(&self, t: &Tensor, offset: usize, bytes: &[u8]) -> Result<()> {
+        self.rt.write(t, offset, bytes)
+    }
+
     /// When true, prints the compiled schedule (`lapid_compiler::dump`) and per-launch
     /// timings to stderr. Also enabled by env `LAPID_DEBUG=1`.
     pub fn set_debug(&self, on: bool) {

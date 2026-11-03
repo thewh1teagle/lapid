@@ -251,6 +251,20 @@ impl Backend for CpuBackend {
         Ok(CpuBuffer::map(host).map(|b| Arc::new(b) as DeviceData))
     }
 
+    fn write(&self, buf: &DeviceData, offset: usize, bytes: &[u8]) -> Result<()> {
+        let b = as_cpu(buf)?;
+        if b.is_mapped() {
+            return Err(Error::new("invalid_argument", "write into a read-only mapped buffer"));
+        }
+        if offset.checked_add(bytes.len()).is_none_or(|end| end > b.len()) {
+            return Err(Error::new("invalid_argument", format!("write of {} bytes at {offset} outside a {}-byte buffer", bytes.len(), b.len())));
+        }
+        // SAFETY: in range (checked), our own heap allocation (not mapped); execute is
+        // synchronous, so no kernel reads or writes it now (caller contract).
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.as_ptr().add(offset), bytes.len()) };
+        Ok(())
+    }
+
     fn download(&self, buf: &DeviceData) -> Result<Vec<u8>> {
         let b = as_cpu(buf)?;
         // SAFETY: execute is synchronous, no kernel is writing this buffer now.
