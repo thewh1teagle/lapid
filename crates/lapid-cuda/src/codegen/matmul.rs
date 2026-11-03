@@ -76,7 +76,7 @@ pub(super) fn plan(spec: &Arc<MatMulSpec>, d: &MatMulDims, caps: &Caps) -> Resul
     p.u(so)?;
     let empty = d.batch == 0 || d.m == 0 || d.n == 0;
     if gemv {
-        let w = gemv::split(d.batch * d.m * d.n, d.k);
+        let w = gemv::split(d.batch * d.m * d.n, d.k, spec.b_dtype);
         let cb = d.n.div_ceil(gemv::COLS / w as usize);
         p.u(cb)?.u(0)?;
         out_view(&mut p, d)?;

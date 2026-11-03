@@ -1,5 +1,5 @@
 //! MXFP4 (ggml `block_mxfp4`, AoS as in GGUF): element dequantization (gather, scalar GEMM),
-//! the GEMV lane dot product and the tensor-core GEMM B-tile loader.
+//! the GEMV lane dot product (half a block per lane) and the tensor-core GEMM B-tile loader.
 //!
 //! Block (17 bytes, 32 elements): `e u8 (e8m0) | qs[16]`; byte j holds element j (low
 //! nibble) and j + 16 (high nibble); `x = KV[q] * 2^(e - 128)`, `KV` the doubled e2m1 values
@@ -144,39 +144,40 @@ pub(crate) fn load_elem(g: &mut Gen, ptr: &str, e: &str, dst: &str) {
     g.op(format!("mul.f32 {dst}, {f}, {d}"));
 }
 
-/// GEMV lane dot product: `out = sum A * B[gj, ..]` over the lane's 8 elements at k-offset
-/// `k` (a multiple of 8): quant bytes 4wo..4wo+4 of block k / 32 (wo = (k / 8) % 4), i.e.
-/// elements 4wo + 0..4 (low nibbles) and 16 + 4wo + 0..4 (high nibbles). Four lanes share a
-/// block, a warp step reads 8 consecutive blocks. Expects `%gj`, `%K`, `%arow`, `%g_a`,
-/// `%g_b`.
-pub(crate) fn gemv_dot(g: &mut Gen, spec: &MatMulSpec, vec_a: bool, k: &str, out: &str) {
-    let (blk, wo, t, es) = (g.reg("u32"), g.reg("u32"), g.reg("u32"), g.reg("u32"));
+/// GEMV lane dot product over half a block: `out = sum A * B[gj, ..]` over the 16
+/// elements of block k / 32 held by quant bytes 8h..8h+8 (h = (k / 16) % 2: elements
+/// 8h + 0..8 (low nibbles) and 16 + 8h + 0..8 (high nibbles)); two lanes share a block, a
+/// warp step reads 16 consecutive blocks. Expects `%gj`, `%K`, `%arow`, `%g_a`, `%g_b`.
+pub(crate) fn gemv_dot_half(g: &mut Gen, spec: &MatMulSpec, vec_a: bool, k: &str, out: &str) {
+    let (blk, h, t, es) = (g.reg("u32"), g.reg("u32"), g.reg("u32"), g.reg("u32"));
     g.op(format!("shr.u32 {t}, %K, 5"));
     g.op(format!("shr.u32 {blk}, {k}, 5"));
     g.op(format!("mad.lo.u32 {blk}, %gj, {t}, {blk}"));
-    g.op(format!("bfe.u32 {wo}, {k}, 3, 2"));
+    g.op(format!("bfe.u32 {h}, {k}, 4, 1"));
     let base = block_addr(g, "%g_b", &blk);
     g.op(format!("ld.global.nc.u8 {es}, [{base}]"));
     let a = g.reg("b64");
-    g.op(format!("mul.wide.u32 {a}, {wo}, 4"));
+    g.op(format!("mul.wide.u32 {a}, {h}, 8"));
     g.op(format!("add.s64 {a}, {a}, {base}"));
     g.op(format!("add.s64 {a}, {a}, 1"));
-    let w = [g.reg("b32")];
+    let w = [g.reg("b32"), g.reg("b32")];
     load_words(g, &a, &w);
     let (klo, khi) = (g.reg("u32"), g.reg("u32"));
     g.op(format!("and.b32 {klo}, {k}, -32"));
-    g.op(format!("mad.lo.u32 {klo}, {wo}, 4, {klo}"));
+    g.op(format!("mad.lo.u32 {klo}, {h}, 8, {klo}"));
     g.op(format!("add.u32 {khi}, {klo}, 16"));
-    let alo = a_run(g, spec, vec_a, &klo, 0, 4);
-    let ahi = a_run(g, spec, vec_a, &khi, 0, 4);
+    let alo: Vec<String> = (0..2).flat_map(|c| a_run(g, spec, vec_a, &klo, 4 * c, 4)).collect();
+    let ahi: Vec<String> = (0..2).flat_map(|c| a_run(g, spec, vec_a, &khi, 4 * c, 4)).collect();
     let (tb, magic) = table(g);
-    let (lo, hi) = decode(g, &tb, &w[0]);
     let s = g.reg("f32");
     g.op(format!("mov.f32 {s}, 0f00000000"));
-    for (word, av) in [(&lo, &alo), (&hi, &ahi)] {
-        for (i, at) in av.iter().enumerate() {
-            let f = byte_f32(g, word, &magic, i);
-            g.op(format!("fma.rn.f32 {s}, {f}, {at}, {s}"));
+    for (i, wi) in w.iter().enumerate() {
+        let (even, odd) = decode(g, &tb, wi);
+        for (word, av) in [(&even, &alo), (&odd, &ahi)] {
+            for j in 0..4 {
+                let f = byte_f32(g, word, &magic, j);
+                g.op(format!("fma.rn.f32 {s}, {f}, {}, {s}", av[4 * i + j]));
+            }
         }
     }
     let d = scale(g, &es);

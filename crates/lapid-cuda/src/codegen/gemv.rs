@@ -17,12 +17,20 @@ pub(crate) const COLS: usize = 8;
 /// Target warps per launch: fewer columns than this split k over 2, 4 or 8 warps per column.
 const TARGET_WARPS: usize = 8192;
 
-/// Warps per output column for `cols` output columns (all rows / batches) of length `k`:
-/// split while the launch has fewer than `TARGET_WARPS` warps and every warp keeps at
-/// least one full 512-element iteration.
-pub(crate) fn split(cols: usize, k: usize) -> u32 {
+/// Consecutive k per lane and step for B dtype `b`: half a 32-element block for MXFP4
+/// (8 quant bytes + the scale per lane: ~7% faster than 4 bytes, whole blocks were slower
+/// at decode shapes), else 8.
+pub(crate) fn lane_elems(b: DType) -> usize {
+    if b == DType::Mxfp4 { 16 } else { 8 }
+}
+
+/// Warps per output column for `cols` output columns (all rows / batches) of length `k`
+/// with B dtype `b`: split while the launch has fewer than `TARGET_WARPS` warps and every
+/// warp keeps at least two full iterations (64 * `lane_elems` k each).
+pub(crate) fn split(cols: usize, k: usize, b: DType) -> u32 {
+    let iter = 64 * lane_elems(b);
     let mut w = 1;
-    while w < COLS && cols * w < TARGET_WARPS && k >= 1024 * w {
+    while w < COLS && cols * w < TARGET_WARPS && k >= 2 * iter * w {
         w *= 2;
     }
     w as u32
@@ -96,12 +104,13 @@ fn load_a(
     v
 }
 
-/// `out = sum_t A[k + t] * B[gj, k + t]` over the lane's 8 elements at k-offset `k`.
+/// `out = sum_t A[k + t] * B[gj, k + t]` over the lane's `lane_elems` elements at k-offset
+/// `k`.
 fn dot8(spec: &MatMulSpec, vec_a: bool, vec_b: bool, k: &str, out: &str) -> String {
     let mut g = Gen::new();
     match spec.b_dtype {
         DType::Q4K | DType::Q5K | DType::Q6K => kquant::gemv_dot(&mut g, spec, vec_a, k, out),
-        DType::Mxfp4 => super::mxfp4::gemv_dot(&mut g, spec, vec_a, k, out),
+        DType::Mxfp4 => super::mxfp4::gemv_dot_half(&mut g, spec, vec_a, k, out),
         DType::Int8 | DType::Int4 => {
             let int8 = spec.b_dtype == DType::Int8;
             let e = g.reg("u32");
@@ -234,6 +243,7 @@ pub(super) fn source(spec: &MatMulSpec, vec_a: bool, vec_b: bool, id: bool, w: u
     };
     let da = dot8(spec, vec_a, vec_b, "%ka", "%sa");
     let db = dot8(spec, vec_a, vec_b, "%kb", "%sb");
+    let el = lane_elems(spec.b_dtype);
     let mut flags = Vec::new();
     if id {
         flags.push("ID");
@@ -253,7 +263,11 @@ pub(super) fn source(spec: &MatMulSpec, vec_a: bool, vec_b: bool, id: bool, w: u
             ("WLOG", &w.trailing_zeros().to_string()),
             ("WMASK", &(w - 1).to_string()),
             ("CPB", &(COLS as u32 / w).to_string()),
-            ("KSTEP", &(512 * w).to_string()),
+            ("EL", &el.to_string()),
+            ("EL_LOG", &el.trailing_zeros().to_string()),
+            ("HALF", &(32 * el).to_string()),
+            ("ITER", &(64 * el).to_string()),
+            ("KSTEP", &(64 * el * w as usize).to_string()),
             ("SPLIT_SUM", &split_sum(w)),
         ],
         &flags,

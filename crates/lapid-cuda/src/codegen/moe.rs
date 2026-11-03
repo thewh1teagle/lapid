@@ -67,7 +67,7 @@ pub(super) fn plan(spec: &Arc<MatMulIdSpec>, d: &MatMulIdDims, caps: &Caps) -> R
         Ok(())
     };
     if gemv_path {
-        let w = gemv::split(rows * d.n, d.k);
+        let w = gemv::split(rows * d.n, d.k, spec.w_dtype);
         let cb = d.n.div_ceil(gemv::COLS / w as usize);
         let mut p = Params::default();
         p.u(rows)?.u(1)?.u(d.n)?.u(d.k)?;

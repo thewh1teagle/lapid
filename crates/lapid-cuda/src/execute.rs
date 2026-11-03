@@ -133,11 +133,12 @@ struct Bind<'a> {
     flag: u64,
 }
 
-/// Launches in the first captured graph chunk of an execute, and in every later one.
-const FIRST_CHUNK: usize = 16;
+/// Launches of a graph-captured execute issued directly before the first captured chunk
+/// (the GPU starts at once instead of after a capture + graph update), and per chunk.
+const DIRECT: usize = 8;
 const CHUNK: usize = 64;
 
-/// (first, later) chunk sizes; `LAPID_CUDA_CHUNK=first,later` overrides (experiments).
+/// (direct launches, chunk size); `LAPID_CUDA_CHUNK=direct,chunk` overrides (experiments).
 fn chunk_sizes() -> (usize, usize) {
     static V: std::sync::OnceLock<(usize, usize)> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
@@ -147,7 +148,7 @@ fn chunk_sizes() -> (usize, usize) {
                 let (a, b) = v.split_once(',')?;
                 Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
             })
-            .unwrap_or((FIRST_CHUNK, CHUNK))
+            .unwrap_or((DIRECT, CHUNK))
     })
 }
 
@@ -223,9 +224,15 @@ impl Exec {
             .ok_or_else(|| Error::new("cuda", "staging buffer missing"))
     }
 
+    /// Fill `dst` with `bytes`. Small ones (host leaves of a decode step) return once the
+    /// bytes are in pinned memory (the copy completes in stream order, before any later
+    /// launch or download); larger ones wait for the copy.
     pub fn upload(&mut self, ctx: &Ctx, dst: &CudaBuffer, bytes: &[u8]) -> Result<()> {
         ctx.bind()?;
         let stream = self.stream;
+        if bytes.len() <= crate::memory::SMALL_UPLOAD {
+            return self.staging(ctx)?.upload_small(ctx.drv, stream, dst.ptr(), bytes);
+        }
         self.staging(ctx)?.upload(ctx.drv, stream, dst.ptr(), bytes, true)
     }
 
@@ -387,8 +394,8 @@ impl Exec {
         // small multi-launch executes go through a captured graph (not when timing: events
         // between launches would be captured too)
         // Long executes are captured in chunks, each launched as soon as it is captured, so
-        // the GPU runs chunk i while the host captures chunk i + 1 (the first chunk is short
-        // to start the GPU early).
+        // the GPU runs chunk i while the host captures chunk i + 1; the first few launches
+        // are issued directly, so the GPU starts while the first chunk is captured.
         let capture = self.use_graphs && !timed && items.len() >= 2;
         // trace: GPU span of the execute (first launch start to last launch end)
         let span = trace_enabled() && capture;
@@ -398,10 +405,15 @@ impl Exec {
         let mut kernels = Vec::with_capacity(items.len());
         let bind = Bind { ptrs: &ptrs, scratch, flag };
         if capture {
-            let mut start = 0;
+            let (direct, len) = chunk_sizes();
+            let mut start = if items.len() - direct.min(items.len()) < 2 { items.len() } else { direct };
+            if span {
+                // SAFETY: event + stream owned by us.
+                drv.check("cuEventRecord", unsafe { (drv.cuEventRecord)(self.events[0], self.stream) })?;
+            }
+            self.issue(ctx, modules, &items[..start], &bind, false, &mut kernels)?;
             while start < items.len() {
-                let len = if start == 0 { chunk_sizes().0 } else { chunk_sizes().1 };
-                let end = (start + len).min(items.len());
+                let end = (start + len.max(1)).min(items.len());
                 let end = if items.len() - end < 2 { items.len() } else { end };
                 let chunk = &items[start..end];
                 let k0 = kernels.len();
@@ -421,10 +433,6 @@ impl Exec {
                     ),
                 );
                 let t = std::time::Instant::now();
-                if span && start == 0 {
-                    // SAFETY: event + stream owned by us.
-                    drv.check("cuEventRecord", unsafe { (drv.cuEventRecord)(self.events[0], self.stream) })?;
-                }
                 self.graphs.launch(drv, self.stream, key, graph)?;
                 update_ms += t.elapsed().as_secs_f64() * 1e3;
                 start = end;

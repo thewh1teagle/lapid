@@ -217,6 +217,11 @@ pub(crate) struct Staging {
     pending: [bool; 2],
     /// Half the next chunk goes to (alternates across calls, so back-to-back uploads overlap).
     next: usize,
+    /// Pinned ring for small uploads (`upload_small`), its bytes in use and the event that
+    /// marks the end of its copies when it wraps.
+    ring: *mut u8,
+    ring_used: usize,
+    ring_event: CUevent,
 }
 
 // SAFETY: the pinned host pointer and events are only used by the owner (behind the
@@ -225,6 +230,10 @@ unsafe impl Send for Staging {}
 
 /// Bytes per staging half.
 const STAGING_HALF: usize = 16 << 20;
+/// Bytes of the small-upload ring.
+const RING: usize = 1 << 20;
+/// Largest upload through the ring (never waited for: host leaves of a decode step).
+pub(crate) const SMALL_UPLOAD: usize = 64 << 10;
 
 /// Host threads of one large staging copy (one memcpy stream reaches ~20 GB/s).
 const COPY_THREADS: usize = 4;
@@ -256,15 +265,20 @@ impl Staging {
         let mut host: *mut c_void = std::ptr::null_mut();
         // SAFETY: allocates page-locked host memory owned by this struct.
         drv.check("cuMemAllocHost", unsafe {
-            (drv.cuMemAllocHost_v2)(&mut host, 2 * STAGING_HALF)
+            (drv.cuMemAllocHost_v2)(&mut host, 2 * STAGING_HALF + RING)
         })?;
-        let mut events = [std::ptr::null_mut(); 2];
-        for e in &mut events {
+        let mut events = [std::ptr::null_mut(); 3];
+        for (i, e) in events.iter_mut().enumerate() {
             // SAFETY: creates an event owned by this struct.
             let r = unsafe { (drv.cuEventCreate)(e, driver::EVENT_DISABLE_TIMING) };
             if r != driver::CUDA_SUCCESS {
-                // SAFETY: freeing what we just allocated.
-                unsafe { (drv.cuMemFreeHost)(host) };
+                // SAFETY: freeing what we just created / allocated.
+                unsafe {
+                    for e in &events[..i] {
+                        (drv.cuEventDestroy_v2)(*e);
+                    }
+                    (drv.cuMemFreeHost)(host);
+                }
                 return Err(Error::new(
                     "cuda",
                     format!("cuEventCreate: {}", drv.error_text(r)),
@@ -274,9 +288,13 @@ impl Staging {
         Ok(Staging {
             host: host as *mut u8,
             half: STAGING_HALF,
-            events,
+            events: [events[0], events[1]],
             pending: [false; 2],
             next: 0,
+            // SAFETY: the ring is the tail of the allocation.
+            ring: unsafe { (host as *mut u8).add(2 * STAGING_HALF) },
+            ring_used: 0,
+            ring_event: events[2],
         })
     }
 
@@ -286,8 +304,37 @@ impl Staging {
             for e in self.events {
                 (drv.cuEventDestroy_v2)(e);
             }
+            (drv.cuEventDestroy_v2)(self.ring_event);
             (drv.cuMemFreeHost)(self.host as *mut c_void);
         }
+    }
+
+    /// Copy `src` (at most `SMALL_UPLOAD` bytes) to device address `dst` through the ring:
+    /// returns once `src` is in pinned memory, the device copy completes in stream order.
+    /// Waits only when the ring wraps (for every copy issued from it so far).
+    pub fn upload_small(&mut self, drv: &Driver, stream: CUstream, dst: CUdeviceptr, src: &[u8]) -> Result<()> {
+        debug_assert!(src.len() <= SMALL_UPLOAD);
+        let len = src.len().next_multiple_of(256);
+        if self.ring_used + len > RING {
+            // SAFETY: event + stream owned by us.
+            unsafe {
+                drv.check("cuEventRecord", (drv.cuEventRecord)(self.ring_event, stream))?;
+                drv.check("cuEventSynchronize", (drv.cuEventSynchronize)(self.ring_event))?;
+            }
+            self.ring_used = 0;
+        }
+        // SAFETY: bytes ring_used.. of the ring are not read by any pending copy (the ring
+        // was drained when it last wrapped) and `len <= RING - ring_used`.
+        unsafe {
+            let h = self.ring.add(self.ring_used);
+            std::ptr::copy_nonoverlapping(src.as_ptr(), h, src.len());
+            drv.check(
+                "cuMemcpyHtoDAsync",
+                (drv.cuMemcpyHtoDAsync_v2)(dst, h as *const c_void, src.len(), stream),
+            )?;
+        }
+        self.ring_used += len;
+        Ok(())
     }
 
     fn wait(&mut self, drv: &Driver, slot: usize) -> Result<()> {

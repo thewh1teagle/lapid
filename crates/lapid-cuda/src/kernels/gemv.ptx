@@ -1,10 +1,11 @@
 // Matrix-vector product for small m with transposed B (the decoder hot path).
 // One warp per output column, 8 columns per 256-thread block, no shared memory and no
-// block barriers. Lane l covers 8 consecutive k per 256-wide step (coalesced A and B
-// reads), two steps per iteration with all loads issued before the math; the column sum
-// is a warp butterfly and lane 0 runs the fused epilogue.
-// SPLIT (few columns): W = {{W}} warps per column split k (warp s starts at 512 s, steps
-// 512 W), 8 / W columns per block, partial sums combined through shared memory.
+// block barriers. Lane l covers EL = {{EL}} consecutive k per 32 EL-wide step (coalesced A
+// and B reads; EL = 16 for MXFP4: half a block per lane, else 8), two steps per
+// iteration with all loads issued before the math; the column sum is a warp butterfly
+// and lane 0 runs the fused epilogue.
+// SPLIT (few columns): W = {{W}} warps per column split k (warp s starts at 64 EL s, steps
+// 64 EL W), 8 / W columns per block, partial sums combined through shared memory.
 // Grid: batch * m * col_blocks blocks.
 // Params: [batch, m, n, k, a.off, a.bs, a.rs, b.off, b.bs, b.rs, scales_off, col_blocks,
 //          r (ID), out.off, out.bs, out.rs, extra_e(off, s_batch, s_m, s_n)...]
@@ -85,13 +86,13 @@
     ld.param.u32 %brs, [P+36];
     ld.param.u32 %so, [P+40];
     mov.f32 %part, 0f00000000;
-    shl.b32 %k0, %lane, 3;
-    mad.lo.u32 %k0, %ks, 512, %k0;
+    shl.b32 %k0, %lane, {{EL_LOG}};
+    mad.lo.u32 %k0, %ks, {{ITER}}, %k0;
 LOOP:
     setp.ge.u32 %p, %k0, %K;
     @%p bra LOOP_END;
     mov.u32 %ka, %k0;
-    add.u32 %kb, %k0, 256;
+    add.u32 %kb, %k0, {{HALF}};
     setp.lt.u32 %q, %kb, %K;
     selp.b32 %kb, %kb, %k0, %q;
 {{DOT_A}}
