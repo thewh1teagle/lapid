@@ -53,6 +53,11 @@ impl RowBuffer {
         }
     }
 
+    /// Keep the first `len` rows (a rewind: later appends overwrite the rest).
+    pub fn truncate(&mut self, len: usize) {
+        self.len = self.len.min(len);
+    }
+
     /// `rows [n, width]` appended: the next buffer (stage its storage) and all its rows
     /// `[len + n, width]`.
     pub fn append(&self, rows: &Tensor) -> Result<(RowBuffer, Tensor)> {

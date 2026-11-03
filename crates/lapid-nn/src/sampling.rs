@@ -161,6 +161,14 @@ impl Sampler {
     /// Pick the next token from `logits` given the tokens so far (for the repetition
     /// penalty). Order as in HF: penalty, temperature, top-k, top-p.
     pub fn sample(&mut self, logits: &[f32], history: &[u32]) -> u32 {
+        let dist = self.distribution(logits, history);
+        self.pick(&dist)
+    }
+
+    /// The distribution [`sample`](Self::sample) draws from: `(token, probability)` with
+    /// positive probabilities summing to 1, most likely first when truncated (top-k / top-p).
+    /// Greedy (and degenerate cases) is the argmax with probability 1.
+    pub fn distribution(&self, logits: &[f32], history: &[u32]) -> Vec<(u32, f64)> {
         let p = &self.params;
         // Copy only when the penalty edits the logits.
         let l: std::borrow::Cow<'_, [f32]> = if p.repetition_penalty == 1.0 {
@@ -171,7 +179,7 @@ impl Sampler {
             l.into()
         };
         if p.temperature <= 0.0 || l.len() <= 1 {
-            return argmax(&l) as u32;
+            return vec![(argmax(&l) as u32, 1.0)];
         }
         let inv_t = 1.0 / p.temperature;
         let mut cand: Vec<(u32, f32)> =
@@ -188,7 +196,7 @@ impl Sampler {
         }
         let max = cand.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max);
         if max == f32::NEG_INFINITY {
-            return argmax(&l) as u32;
+            return vec![(argmax(&l) as u32, 1.0)];
         }
         let mut probs: Vec<f64> = cand.iter().map(|c| ((c.1 - max) as f64).exp()).collect();
         let total: f64 = probs.iter().sum();
@@ -208,15 +216,29 @@ impl Sampler {
             let total: f64 = probs.iter().sum();
             probs.iter_mut().for_each(|x| *x /= total);
         }
+        cand.iter().zip(probs).map(|(c, x)| (c.0, x)).collect()
+    }
+
+    /// Draw from a [`distribution`](Self::distribution) (one uniform when sampling; greedy
+    /// consumes no randomness).
+    pub fn pick(&mut self, dist: &[(u32, f64)]) -> u32 {
+        if let ([(t, _)], true) = (dist, self.params.temperature <= 0.0) {
+            return *t;
+        }
         let u = self.rng.next_f64();
         let mut acc = 0.0;
-        for (c, &x) in cand.iter().zip(&probs) {
+        for &(t, x) in dist {
             acc += x;
             if u < acc {
-                return c.0;
+                return t;
             }
         }
-        cand.last().map_or(0, |c| c.0)
+        dist.last().map_or(0, |c| c.0)
+    }
+
+    /// One uniform draw in `[0, 1)` from the sampler's stream (speculative acceptance tests).
+    pub fn uniform(&mut self) -> f64 {
+        self.rng.next_f64()
     }
 }
 
