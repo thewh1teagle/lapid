@@ -86,7 +86,7 @@ pub(crate) struct Attention {
 }
 
 /// `[n, len]` host mask: 0 where `visible(query position, key index)`, else NEG.
-fn host_mask(n: usize, len: usize, visible: impl Fn(usize, usize) -> bool) -> Result<Tensor> {
+pub(crate) fn host_mask(n: usize, len: usize, visible: impl Fn(usize, usize) -> bool) -> Result<Tensor> {
     let mut m = Vec::with_capacity(n * len);
     for i in 0..n {
         for j in 0..len {
@@ -121,6 +121,31 @@ impl Indexer {
         let keep = hit.mul(&Tensor::from_f32(&valid, &[n, t])?)?;
         Tensor::where_(&keep, &Tensor::full(0.0, &[n, t], DType::F32), &Tensor::full(f64::from(NEG), &[n, t], DType::F32))
     }
+}
+
+/// Attention with per-head sinks over shared K = V rows: `q [n, H, hd]`, `keys [S, hd]`,
+/// additive `mask [n, S]`, `sinks [1, H, 1]` -> `[n, H, hd]`. `[n, H, S]` logits plus the sink
+/// column, softmax, the sink dropped.
+pub(crate) fn sink_attention(q: &Tensor, keys: &Tensor, mask: &Tensor, sinks: &Tensor) -> Result<Tensor> {
+    let (n, h, hd) = (q.shape()[0], q.shape()[1], q.shape()[2]);
+    let s = keys.shape()[0];
+    let logits = q.reshape(&[n * h, hd])?.matmul_t(keys)?.reshape(&[n, h, s])?;
+    let logits = logits.mul_scalar(1.0 / (hd as f64).sqrt())?.add(&mask.unsqueeze(1)?)?;
+    let sink = sinks.expand(&[n, h, 1])?;
+    let p = Tensor::cat(&[&logits, &sink], 2)?.softmax()?.slice(2, 0, s)?;
+    p.reshape(&[n * h, s])?.matmul(keys)?.reshape(&[n, h, hd])
+}
+
+/// Grouped low-rank output projection `o [n, H, hd]` -> `[n, D]`: one MatMulId "expert" of
+/// `wo_a [G, o_lora, H / G * hd]` per group, then `wo_b`.
+pub(crate) fn grouped_output(o: &Tensor, wo_a: &Tensor, act_quant: bool, wo_b: &Linear, g: usize) -> Result<Tensor> {
+    let (n, h, hd) = (o.shape()[0], o.shape()[1], o.shape()[2]);
+    let rows = o.reshape(&[n * g, h / g * hd])?;
+    let rows = if act_quant { fake_quant_act(&rows)? } else { rows };
+    let ids: Vec<i32> = (0..n * g).map(|i| (i % g) as i32).collect();
+    let oa = rows.matmul_id(wo_a, &Tensor::from_i32(&ids, &[n * g, 1])?)?; // [n*g, 1, o_lora]
+    let ol = oa.shape()[2];
+    wo_b.forward(&oa.reshape(&[n, g * ol])?)?.cast(DType::F32)
 }
 
 impl Attention {
@@ -191,22 +216,9 @@ impl Attention {
             }
         };
 
-        // attention with per-head sinks: [n, H, S] logits + sink column, softmax, drop the sink
-        let s = keys.shape()[0];
-        let logits = q.reshape(&[n * h, hd])?.matmul_t(&keys)?.reshape(&[n, h, s])?;
-        let logits = logits.mul_scalar(1.0 / (hd as f64).sqrt())?.add(&mask.unsqueeze(1)?)?;
-        let sink = self.sinks.expand(&[n, h, 1])?;
-        let p = Tensor::cat(&[&logits, &sink], 2)?.softmax()?.slice(2, 0, s)?;
-        let o = p.reshape(&[n * h, s])?.matmul(&keys)?.reshape(&[n, h, hd])?;
+        let o = sink_attention(&q, &keys, &mask, &self.sinks)?;
         let o = self.rope.apply(&o, &cos, &sin, true)?;
-
-        // grouped low-rank output projection (one MatMulId "expert" per group)
-        let rows = o.reshape(&[n * g, h / g * hd])?;
-        let rows = if self.wo_a_act_quant { fake_quant_act(&rows)? } else { rows };
-        let ids: Vec<i32> = (0..n * g).map(|i| (i % g) as i32).collect();
-        let oa = rows.matmul_id(&self.wo_a, &Tensor::from_i32(&ids, &[n * g, 1])?)?; // [n*g, 1, o_lora]
-        let ol = oa.shape()[2];
-        let out = self.wo_b.forward(&oa.reshape(&[n, g * ol])?)?.cast(DType::F32)?;
+        let out = grouped_output(&o, &self.wo_a, self.wo_a_act_quant, &self.wo_b, g)?;
         Ok((out, next))
     }
 }

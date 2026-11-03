@@ -88,7 +88,8 @@ fn ratios(v: &Value, n_layers: usize) -> Result<Vec<usize>> {
         .collect()
 }
 
-fn yarn(v: &Value) -> Option<Yarn> {
+/// YaRN from `rope_scaling` (`type` / `rope_type` "yarn") or transformers `rope_parameters`.
+pub(crate) fn yarn(v: &Value) -> Option<Yarn> {
     let r = v
         .get("rope_scaling")
         .filter(|r| r.is_object())

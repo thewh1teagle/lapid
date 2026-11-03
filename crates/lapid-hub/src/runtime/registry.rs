@@ -68,7 +68,7 @@ impl ModelEntry {
 }
 
 /// Migrated models.
-pub static MODELS: &[&ModelEntry] = &[&crate::lfm3::ENTRY, &crate::deepseek4::ENTRY, &crate::embeddinggemma::ENTRY, &crate::phonon::ENTRY, &crate::llama::ENTRY, &crate::qwen35::ENTRY, &crate::qwen4exp::ENTRY, &crate::whisper::ENTRY, &crate::parakeet::ENTRY, &crate::zipformer::ENTRY, &crate::vad::ENTRY, &crate::gemma4::ENTRY, &crate::gemma4::MOE_ENTRY, &crate::gemma4::VL_ENTRY, &crate::qwen3vl::ENTRY];
+pub static MODELS: &[&ModelEntry] = &[&crate::lfm3::ENTRY, &crate::deepseek4::ENTRY, &crate::deepseek41::ENTRY, &crate::embeddinggemma::ENTRY, &crate::phonon::ENTRY, &crate::llama::ENTRY, &crate::qwen35::ENTRY, &crate::qwen4exp::ENTRY, &crate::whisper::ENTRY, &crate::parakeet::ENTRY, &crate::zipformer::ENTRY, &crate::vad::ENTRY, &crate::gemma4::ENTRY, &crate::gemma4::MOE_ENTRY, &crate::gemma4::VL_ENTRY, &crate::qwen3vl::ENTRY];
 
 /// Entry by verify/bench name or `.lapid` architecture (a spec's GGUF architectures name
 /// the variants it writes too, e.g. `qwen3` / `qwen3moe` files of `llama`).
