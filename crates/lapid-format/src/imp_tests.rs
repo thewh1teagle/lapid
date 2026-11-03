@@ -1,4 +1,6 @@
 use super::*;
+use crate::write::partial_path;
+use std::path::PathBuf;
 use crate::{Reader, Writer};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -241,6 +243,29 @@ fn blobs_round_trip() {
     drop(r);
     corrupt(&p, off, |b| *b ^= 1);
     assert_eq!(Reader::open(&p).err().map(|e| e.code), Some("hash_mismatch"));
+    std::fs::remove_file(&p).ok();
+}
+
+#[test]
+fn shared_blobs_streamed() {
+    let p = tmp_path("shared-blobs");
+    // Larger than one copy chunk, from a shared image (as a source mmap would be).
+    let image: Vec<u8> = (0..(70usize << 20) + 123).map(|i| (i * 7 + i / 4096) as u8).collect();
+    let image: Bytes = Arc::new(image);
+    let mut w = Writer::create(&p, meta()).expect("create");
+    w.add("w", DType::F32, &[2], &[1u8; 8]).expect("add");
+    w.add_blob_shared("big", "application/octet-stream", image.clone(), 100..(70 << 20) + 101).expect("blob");
+    w.add_blob("small", "text/plain", b"hi").expect("blob");
+    w.add_blob_shared("empty", "application/octet-stream", image.clone(), 5..5).expect("blob");
+    let n = (*image).as_ref().len();
+    assert_eq!(w.add_blob_shared("oob", "application/octet-stream", image.clone(), 0..n + 1).err().map(|e| e.code), Some("invalid_argument"));
+    assert_eq!(w.add_blob_shared("big", "application/octet-stream", image.clone(), 0..1).err().map(|e| e.code), Some("invalid_argument"));
+    w.finish().expect("finish");
+    let r = Reader::open(&p).expect("open");
+    assert_eq!(r.blob("big"), Some(&(*image).as_ref()[100..(70 << 20) + 101]));
+    assert_eq!(r.blob("small"), Some(&b"hi"[..]));
+    assert_eq!(r.blob("empty"), Some(&[][..]));
+    r.verify_tensors().expect("verify");
     std::fs::remove_file(&p).ok();
 }
 

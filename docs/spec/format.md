@@ -215,9 +215,10 @@ section can be copied between files verbatim:
 - `media_type`: `type/subtype[;params]`, 1..=255 printable ASCII bytes, no spaces.
 - `[offset, offset + nbytes)` inside the section, after the index; non-empty blobs do
   not overlap.
-- The whole section is ≤ 1 GiB and its section hash is checked on open (blobs are
-  small assets; large arrays belong in tensors). Per-blob hashes are checked by
-  `verify_tensors` / `lapid info --verify`.
+- The whole section is ≤ 4 TiB. Its section hash is checked on open when the section is
+  ≤ 256 MiB (tokenizers and other small assets); larger sections (raw tables streamed
+  from a source file, e.g. embedding hash tables) are only index-validated on open.
+  Per-blob hashes are checked by `verify_tensors` / `lapid info --verify`.
 
 ## Reader validation (in order)
 
@@ -232,7 +233,8 @@ section can be copied between files verbatim:
    required metadata keys present; `format` is `lapid/1` or `lapid/1.1`.
 6. Every index entry validated as above.
 7. (1.1) `kind` / `extends`, then `components`, validated as above.
-8. BLOBS (if present): blake3 of the section, then the blob index as above.
+8. BLOBS (if present): blake3 of the section (sections ≤ 256 MiB), then the blob index as
+   above.
 
 Error codes: `format` (malformed), `unsupported` (quantization `block_size` ≠ 32),
 `unsupported_version`, `unsupported_feature`, `unsupported_section`, `limit_exceeded`, `hash_mismatch`, `missing_metadata`, `io`.
@@ -243,8 +245,11 @@ The mapping assumes the file is not modified while open.
 
 `Writer::create(path, metadata)` validates metadata (setting `"format": "lapid/1.1"`;
 components / kind / extends checked up front), writes to `<path>.partial`; `add` streams
-each tensor immediately (hashing as it goes); `add_blob(name, media_type, bytes)` buffers
-a blob in memory; `finish` writes the index, the BLOBS section, the table and the header,
+each tensor immediately (hashing as it goes, on all cores for large tensors);
+`add_blob(name, media_type, bytes)` copies a small blob into memory;
+`add_blob_shared(name, media_type, image, range)` records a slice of a shared image (e.g.
+a source mmap), hashes it, and streams it in chunks at `finish` (memory stays bounded for
+blobs of any size); `finish` writes the index, the BLOBS section, the table and the header,
 fsyncs and renames to `path`. A writer dropped without `finish` deletes its partial file.
 
 Reader API: `metadata`, `tensors`, `tensor(name)`, `tensor_bytes`, `blobs()`,
