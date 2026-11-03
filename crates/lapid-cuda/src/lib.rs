@@ -44,6 +44,8 @@ mod mxfp4_tests;
 mod r5_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod write_tests;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 

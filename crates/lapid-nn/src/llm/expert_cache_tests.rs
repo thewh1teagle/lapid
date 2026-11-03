@@ -134,8 +134,8 @@ fn policy_hit_rates() {
         ("zipf 0.8 + reuse 0.3", 0.8, 0.3, 0),
         ("zipf 0.8 + reuse 0.3, drift/500", 0.8, 0.3, 500),
     ];
-    let variants: [(f64, u64); 6] = [(0.05, 0), (8.0, 0), (64.0, 0), (512.0, 0), (64.0, 1), (512.0, 1)];
-    println!("{:<34} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}", "trace", "pool", "hl=0.05", "hl=8", "hl=64", "hl=512", "64+rec", "512+rec", "static*");
+    let variants: [(f64, u64); 5] = [(0.05, 0), (64.0, 0), (512.0, 0), (512.0, 1), (256.0, 1)];
+    println!("{:<34} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}", "trace", "pool", "hl=0.05", "hl=64", "hl=512", "512+rec", "256+rec", "static*");
     for (name, alpha, reuse, drift) in traces {
         // per layer: expert weights over a random order
         let mut weights: Vec<Vec<f64>> = (0..layers)
