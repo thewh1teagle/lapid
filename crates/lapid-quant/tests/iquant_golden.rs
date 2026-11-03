@@ -102,3 +102,30 @@ fn layout_and_generic_quantize() {
         assert!(rel < 0.5, "{f:?}: relative rms error {rel}");
     }
 }
+
+/// Quantization throughput on one DeepSeek V4.1 expert matrix (ignored; release):
+/// `cargo test -p lapid-quant --release --test iquant_golden bench_quantize -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bench_quantize() {
+    let (rows, cols) = (2304, 5120);
+    let mut s = 0x2545_F491_4F6C_DD1Du64;
+    let x: Vec<f32> = (0..rows * cols)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            ((s >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.02
+        })
+        .collect();
+    let w: Vec<f32> = (0..cols).map(|i| 0.5 + (i % 7) as f32).collect();
+    type Q = fn(&[f32], usize, Option<&[f32]>) -> Vec<u8>;
+    let fmts: [(&str, Q); 3] = [("iq2_xxs", lapid_quant::iq2_xxs::quantize), ("iq2_s", lapid_quant::iq2_s::quantize), ("iq3_xxs", lapid_quant::iq3_xxs::quantize)];
+    for (name, q) in fmts {
+        let _ = q(&x[..cols * 8], cols, Some(&w)); // lattice init
+        let t = std::time::Instant::now();
+        let b = q(&x, cols, Some(&w));
+        let dt = t.elapsed().as_secs_f64();
+        println!("{name}: {rows}x{cols} in {:.3} s ({:.1} M elements/s, {} bytes)", dt, (rows * cols) as f64 / dt / 1e6, b.len());
+    }
+}

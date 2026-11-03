@@ -168,12 +168,13 @@ fn iquant_matmul_id() {
 }
 
 /// Many experts (an expert cache's pool of slots), ids spread over the whole range: the
-/// decode GEMV rows and the routed GEMM.
+/// decode GEMV rows, the routed GEMM, and GEMV rows for every token past the routed GEMM's
+/// expert limit.
 #[test]
 fn iquant_matmul_id_many_experts() {
     let Some(be) = cuda() else { return };
-    for (t, r, q, tol) in [(1, 6, true, 1e-5), (70, 4, false, 2e-3)] {
-        let (e, n, k) = (5000, 24, 256);
+    for (t, r, e, q, tol) in [(1, 6, 5000, true, 1e-5), (70, 4, 5000, false, 2e-3), (40, 4, 9000, true, 1e-5)] {
+        let (n, k) = (24, 256);
         let ids: Vec<i32> = (0..t * r).map(|i| ((i * 997 + 13) % e) as i32).collect();
         let (got, want) = run_id(&be, DType::Iq2Xxs, (t, r, e, n, k), &ids, q);
         check(&format!("matmul_id iq2_xxs t{t} r{r} e{e}"), &got, &want, tol);
