@@ -28,6 +28,7 @@
 Install the `lapid` binary (about 17 MB, a 6 MB download, with every GPU backend and the web UI):
 
 ```sh
+cargo install cargo-binstall
 cargo binstall --git https://github.com/thewh1teagle/lapid lapid-cli
 ```
 
