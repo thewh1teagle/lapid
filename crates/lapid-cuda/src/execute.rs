@@ -135,7 +135,7 @@ struct Bind<'a> {
 
 /// Launches of a graph-captured execute issued directly before the first captured chunk
 /// (the GPU starts at once instead of after a capture + graph update), and per chunk.
-const DIRECT: usize = 8;
+const DIRECT: usize = 4;
 const CHUNK: usize = 64;
 
 /// (direct launches, chunk size); `LAPID_CUDA_CHUNK=direct,chunk` overrides (experiments).

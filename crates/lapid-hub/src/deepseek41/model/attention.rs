@@ -99,11 +99,25 @@ pub(crate) struct Attention {
     pub ratio: usize,
 }
 
-/// One set of keys of [`sink_attention`]: shared rows `[S, hd]` or per-query rows `[n, k, hd]`,
-/// with an additive mask `[n, S]` / `[n, k]`.
+/// One set of keys of [`sink_attention`]: shared rows `[S, hd]`, per-query rows `[n, k, hd]`,
+/// or per-block rows `[nb, k, hd]` shared by each block of `block` consecutive queries
+/// (a prompt chunk's sliding window), with an additive mask `[n, S]` / `[n, k]`.
 struct Keys {
     rows: Tensor,
     mask: Tensor,
+    block: usize,
+}
+
+/// `[n, h, x]` viewed as `[nb, block * h, x]` (queries padded to whole blocks) and back.
+fn to_blocks(t: &Tensor, block: usize) -> Result<Tensor> {
+    let (n, h, x) = (t.shape()[0], t.shape()[1], t.shape()[2]);
+    let nb = n.div_ceil(block);
+    t.pad(0, 0, nb * block - n, 0.0)?.reshape(&[nb, block * h, x])
+}
+
+fn from_blocks(t: &Tensor, n: usize, h: usize) -> Result<Tensor> {
+    let (nb, bh, x) = (t.shape()[0], t.shape()[1], t.shape()[2]);
+    t.reshape(&[nb * bh / h, h, x])?.slice(0, 0, n)
 }
 
 /// Attention with per-head sinks over several key sets (K = V): `q [n, H, hd]` -> `[n, H, hd]`.
@@ -112,7 +126,9 @@ fn sink_attention(q: &Tensor, parts: &[Keys], sinks: &Tensor) -> Result<Tensor> 
     let scale = 1.0 / (hd as f64).sqrt();
     let mut logits = Vec::with_capacity(parts.len() + 1);
     for k in parts {
-        let l = if k.rows.rank() == 2 {
+        let l = if k.block > 0 {
+            from_blocks(&to_blocks(q, k.block)?.matmul_t(&k.rows)?, n, h)?
+        } else if k.rows.rank() == 2 {
             q.reshape(&[n * h, hd])?.matmul_t(&k.rows)?.reshape(&[n, h, k.rows.shape()[0]])?
         } else {
             q.matmul_t(&k.rows)? // [n, h, k]
@@ -127,7 +143,13 @@ fn sink_attention(q: &Tensor, parts: &[Keys], sinks: &Tensor) -> Result<Tensor> 
         let len = k.mask.shape()[1];
         let pk = p.slice(2, at, at + len)?;
         at += len;
-        let o = if k.rows.rank() == 2 { pk.reshape(&[n * h, len])?.matmul(&k.rows)?.reshape(&[n, h, hd])? } else { pk.matmul(&k.rows)? };
+        let o = if k.block > 0 {
+            from_blocks(&to_blocks(&pk, k.block)?.matmul(&k.rows)?, n, h)?
+        } else if k.rows.rank() == 2 {
+            pk.reshape(&[n * h, len])?.matmul(&k.rows)?.reshape(&[n, h, hd])?
+        } else {
+            pk.matmul(&k.rows)?
+        };
         out = Some(match out {
             Some(acc) => acc.add(&o)?,
             None => o,
@@ -165,12 +187,12 @@ impl Attention {
         }
         let sel = shared.selection.clone().unwrap_or(Selection::Visible);
         Ok(Some(match sel {
-            Selection::Visible => Keys { rows: comp.rows, mask: host_mask(n, total, |i, j| j < lens[i])? },
-            Selection::Mask(mask) => Keys { rows: comp.rows, mask },
+            Selection::Visible => Keys { rows: comp.rows, mask: host_mask(n, total, |i, j| j < lens[i])?, block: 0 },
+            Selection::Mask(mask) => Keys { rows: comp.rows, mask, block: 0 },
             Selection::Gather { idx, mask } => {
                 let k = idx.shape()[1];
                 let rows = comp.rows.gather(&idx.reshape(&[n * k])?)?.reshape(&[n, k, comp.rows.shape()[1]])?;
-                Keys { rows, mask }
+                Keys { rows, mask, block: 0 }
             }
         }))
     }
@@ -198,15 +220,29 @@ impl Attention {
         let s_raw = m + n;
         let first = pos - m; // absolute position of raw row 0
         let win = self.window;
-        let raw_mask = host_mask(n, s_raw, |i, j| {
+        let visible = |i: usize, j: usize| {
             let (qp, kp) = (pos + i, first + j);
             kp <= qp && qp - kp < win
-        })?;
+        };
         let mut next = st.clone();
         let keep = (win - 1).min(s_raw);
         next.raw = if keep > 0 { Some(raw.slice(0, s_raw - keep, s_raw)?) } else { None };
 
-        let mut parts = vec![Keys { rows: raw, mask: raw_mask }];
+        let window = if n >= 2 * win {
+            // A prompt chunk: each block of `win` queries reads only the 2 win - 1 raw rows
+            // its windows cover (not all m + n rows: ~1/16 of the scores of a 2048 chunk).
+            let (b, kb) = (win, 2 * win - 1);
+            let nb = n.div_ceil(b);
+            // raw row of slot t of block c: m + c b - (win - 1) + t (clamped, masked outside)
+            let row = |c: usize, t: usize| (m + c * b + t).checked_sub(win - 1).filter(|&j| j < s_raw);
+            let idx: Vec<i32> = (0..nb).flat_map(|c| (0..kb).map(move |t| (c, t))).map(|(c, t)| row(c, t).unwrap_or(0) as i32).collect();
+            let rows = raw.gather(&Tensor::from_i32(&idx, &[nb * kb])?)?.reshape(&[nb, kb, hd])?;
+            let mask = host_mask(n, kb, |i, t| row(i / b, t).is_some_and(|j| visible(i, j)))?;
+            Keys { rows, mask, block: b }
+        } else {
+            Keys { rows: raw, mask: host_mask(n, s_raw, visible)?, block: 0 }
+        };
+        let mut parts = vec![window];
         if self.ratio > 0
             && let Some(k) = self.compressed_keys(x, &qr, pos, st, &mut next, shared)?
         {
