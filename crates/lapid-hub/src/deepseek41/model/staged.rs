@@ -58,7 +58,7 @@ struct Pending {
 }
 
 impl Deepseek41Model {
-    pub(super) fn forward_cached(&self, cache: &ExpertCache, ids: &[u32], st: &mut State, rows: Rows, taps: &mut Taps) -> Result<Option<Tensor>> {
+    pub(super) fn forward_cached(&self, cache: &ExpertCache, ids: &[u32], engram_rows: &[Option<Tensor>], st: &mut State, rows: Rows, taps: &mut Taps) -> Result<Option<Tensor>> {
         let _one = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let (t0, before) = (Instant::now(), cache.stats());
         let mut eval = Duration::ZERO;
@@ -92,7 +92,7 @@ impl Deepseek41Model {
                 tap(&mut pend_taps, format!("layers.{li}"), &x.reshape(&[n, hc * d])?);
             }
             if let Some(eg) = &layer.engram {
-                x = self.engram(eg, &x, ids, &st.history)?;
+                x = Self::engram(eg, &x, engram_rows[i].as_ref())?;
             }
             let am = layer.attn_hc.mix(&x)?;
             let xa = match &pre {

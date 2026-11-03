@@ -130,24 +130,59 @@ impl Deepseek41Model {
         self.cache.as_ref()
     }
 
-    /// Start reading the Engram rows of `ids` into the page cache before the layers run.
-    fn prefetch_engram(&self, ids: &[u32], history: &[i64]) {
-        let Some(hash) = &self.hash else { return };
-        for e in self.layers.iter().filter_map(|l| l.engram.as_ref()) {
-            e.table.prefetch(&hash.rows(e.module, history, ids));
+    /// The gathered Engram rows of `ids` per layer (`None`: not an Engram layer), read
+    /// before the layers run: they are scattered small reads of tables far larger than
+    /// memory, so they are all put in flight together (read-ahead hints for a few tokens,
+    /// parallel gathers for a prompt chunk) instead of faulting one by one mid-forward, after
+    /// streaming experts may have evicted them.
+    fn engram_rows(&self, ids: &[u32], history: &[i64]) -> Result<Vec<Option<Tensor>>> {
+        let mut out: Vec<Option<Tensor>> = vec![None; self.layers.len()];
+        let Some(hash) = &self.hash else { return Ok(out) };
+        let jobs: Vec<(usize, &Fp8Rows, Vec<u64>)> = self.layers.iter().enumerate().filter_map(|(i, l)| l.engram.as_ref().map(|e| (i, &e.table, hash.rows(e.module, history, ids)))).collect();
+        let total: usize = jobs.iter().map(|j| j.2.len()).sum();
+        let parts: Vec<(usize, &Fp8Rows, &[u64])> = if total <= PARALLEL_ROWS {
+            for (_, table, rows) in &jobs {
+                table.prefetch(rows);
+            }
+            jobs.iter().map(|(i, t, r)| (*i, *t, r.as_slice())).collect()
+        } else {
+            let per = total.div_ceil(GATHER_THREADS).max(64);
+            jobs.iter().flat_map(|(i, t, r)| r.chunks(per).map(move |c| (*i, *t, c))).collect()
+        };
+        let gathered: Vec<Result<Vec<f32>>> = std::thread::scope(|s| {
+            let handles: Vec<_> = parts
+                .iter()
+                .map(|&(_, table, rows)| {
+                    s.spawn(move || {
+                        let mut v = Vec::with_capacity(rows.len() * table.dim());
+                        table.gather(rows, &mut v).map(|_| v)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(Error::new("internal", "deepseek41: engram gather panicked")))).collect()
+        });
+        let mut per_layer: Vec<Vec<f32>> = vec![Vec::new(); self.layers.len()];
+        for (&(i, _, _), v) in parts.iter().zip(gathered) {
+            per_layer[i].extend(v?);
         }
+        for (i, table, _) in &jobs {
+            out[*i] = Some(Tensor::from_f32(&per_layer[*i], &[ids.len(), hash.cols() * table.dim()])?);
+        }
+        Ok(out)
     }
 
-    /// Streams after layer `i`'s Engram: the hashed rows of `ids` gathered from its table.
-    fn engram(&self, e: &Engram, x: &Tensor, ids: &[u32], history: &[i64]) -> Result<Tensor> {
-        let hash = self.hash.as_ref().ok_or_else(|| Error::new("internal", "deepseek41: engram layer without hash constants"))?;
-        let rows = hash.rows(e.module, history, ids);
-        let mut v = Vec::with_capacity(rows.len() * e.table.dim());
-        e.table.gather(&rows, &mut v)?;
-        let rows = Tensor::from_f32(&v, &[ids.len(), hash.cols() * e.table.dim()])?;
-        e.gate.forward(x, &rows)
+    /// Streams after layer `i`'s Engram, given its gathered rows ([`engram_rows`](Self::engram_rows)).
+    fn engram(e: &Engram, x: &Tensor, rows: Option<&Tensor>) -> Result<Tensor> {
+        let rows = rows.ok_or_else(|| Error::new("internal", "deepseek41: engram layer without gathered rows"))?;
+        e.gate.forward(x, rows)
     }
 }
+
+/// Engram rows of a forward up to which each layer's are gathered by one thread after
+/// read-ahead hints (decode); more are split over [`GATHER_THREADS`].
+const PARALLEL_ROWS: usize = 1024;
+/// Threads gathering more rows (each one page fault at a time: the read queue depth).
+const GATHER_THREADS: usize = 32;
 
 /// Stage the layer states of a forward (the slots that changed) and the Engram look-back.
 fn stage(st: &mut State, next: Vec<LayerState>, ids: &[u32], hash: Option<&NgramHash>) {
@@ -200,9 +235,9 @@ impl CausalLm for Deepseek41Model {
         if ids.is_empty() {
             return Err(Error::new("invalid_argument", "deepseek41: forward of zero tokens"));
         }
-        self.prefetch_engram(ids, &st.history);
+        let engram_rows = self.engram_rows(ids, &st.history)?;
         if let Some(cache) = &self.cache {
-            return self.forward_cached(cache, ids, st, rows, taps);
+            return self.forward_cached(cache, ids, &engram_rows, st, rows, taps);
         }
         let (n, d, hc) = (ids.len(), self.cfg.hidden_size, self.cfg.hc_mult);
         let pos = st.pos;
@@ -214,7 +249,7 @@ impl CausalLm for Deepseek41Model {
         let mut next = Vec::with_capacity(self.layers.len());
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some(eg) = &layer.engram {
-                x = self.engram(eg, &x, ids, &st.history)?;
+                x = Self::engram(eg, &x, engram_rows[i].as_ref())?;
             }
             let am = layer.attn_hc.mix(&x)?;
             let xa = match &pre {
