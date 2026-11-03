@@ -169,7 +169,13 @@ pub fn verify<M: CausalLm>(desc: &Descriptor, reference: Option<&Path>, args: &M
     let quantized = !matches!(dtype.as_str(), "fp32" | "fp16");
     // Other ggml types (q5_0, q8_k mixes, ...) get the 4-bit budget (informational anyway).
     let quality_tol = tolerance(&dtype).or_else(|_| tolerance("int4"))?;
-    let llm = stages.time("load", || Llm::<M>::load(&path, &dev))?;
+    // A float file can still hold losslessly repacked quantized weights (official FP4 experts
+    // as mxfp4): the reference check then runs on them dequantized exactly, as the reference
+    // does (their kernels quantize activations, which `lapid verify --dtype` of a quantized
+    // file checks).
+    let lossless_quant = !quantized && lapid::LapidFile::open(&path)?.tensors.values().any(|t| t.dtype().is_quant());
+    let precision = if lossless_quant { Precision::FakeQuantWeights } else { Precision::Stored };
+    let llm = stages.time("load", || Llm::<M>::load_with(&path, &dev, precision))?;
     let (text_ok, text) = stages.time("text", || check_text(&llm, &r.result))?;
 
     let (short, long) = (r.case("short"), r.case("long"));
@@ -283,5 +289,6 @@ pub fn verify<M: CausalLm>(desc: &Descriptor, reference: Option<&Path>, args: &M
         "reference_dir": reference_dir.display().to_string(),
         "timings_ms": stages.to_json(),
         "notes": quality.notes,
+        "weights": if lossless_quant { "quantized tensors dequantized to f32 (fake-quant weights)" } else { "as stored" },
     }))
 }

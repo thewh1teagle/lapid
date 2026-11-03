@@ -178,16 +178,50 @@ mod tests {
         assert_eq!(m[0], vec![76632096046245, 4839876093313, 35959672319349, 73987337458391]);
     }
 
-    /// The real tokenizer (`LAPID_DS41_TOKENIZER` = a V4.1 `tokenizer.json`): 99092 compressed ids.
+    /// Against the reference's constants (`deepseek41_ref.py`: `engram.json`, the token map
+    /// `.npy` of the real tokenizer), when present: token map, primes, multipliers and the
+    /// hashed rows of its cases, tiny and real layouts, prompts hashed whole and token by token.
     #[test]
-    fn real_token_map() {
-        let Ok(path) = std::env::var("LAPID_DS41_TOKENIZER") else {
-            eprintln!("skipped: LAPID_DS41_TOKENIZER not set");
+    fn reference_constants() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/reference/deepseek41/tiny");
+        let (Ok(json), Ok(npy)) = (std::fs::read_to_string(dir.join("engram.json")), std::fs::read(dir.join("engram_token_map.npy"))) else {
+            eprintln!("skipped: {} not found", dir.display());
             return;
         };
-        let text = std::fs::read_to_string(path).expect("read tokenizer");
-        let tok: Tokenizer = text.parse().expect("tokenizer");
-        let (map, n) = token_map(&tok).expect("token map");
-        assert_eq!((map.len(), n), (129280, 99092));
+        let e: Value = serde_json::from_str(&json).expect("engram.json");
+        let header = u16::from_le_bytes([npy[8], npy[9]]) as usize;
+        let want_map: Vec<i32> = npy[10 + header..].as_chunks::<4>().0.iter().map(|c| i32::from_le_bytes(*c)).collect();
+        if let Ok(text) = std::fs::read_to_string(dir.join("model/tokenizer.json")) {
+            let (map, n) = token_map(&text.parse().expect("tokenizer")).expect("token map");
+            assert_eq!(n, 99092);
+            assert_eq!(map, want_map);
+        }
+        let ints = |v: &Value| -> Vec<Vec<u64>> { serde_json::from_value(v.clone()).expect("ints") };
+        for kind in ["tiny", "real"] {
+            let r = &e[kind];
+            let u = |k: &str| r[k].as_u64().expect("int") as usize;
+            let layers: Vec<usize> = serde_json::from_value(r["layer_ids"].clone()).expect("layers");
+            let (n, h) = (u("max_ngram_size"), u("n_heads"));
+            let p = primes(layers.len(), n, h, u("engram_vocab_size") as u64);
+            assert_eq!(p, ints(&r["primes_flat"]), "{kind} primes");
+            let m = multipliers(&layers, n, u("compressed_vocab_size")).expect("multipliers");
+            assert_eq!(m, ints(&r["multipliers"]), "{kind} multipliers");
+            let hash = NgramHash::new(n, h, want_map.clone(), u("pad_compressed_id") as i64, m, p).expect("hash");
+            for case in r["hash_cases"].as_array().expect("cases") {
+                let ids: Vec<u32> = serde_json::from_value(case["tokens"].clone()).expect("tokens");
+                let want: Vec<Vec<Vec<u64>>> = serde_json::from_value(case["rows"].clone()).expect("rows");
+                for e in 0..layers.len() {
+                    let want_e: Vec<u64> = want.iter().flat_map(|t| t[e].clone()).collect();
+                    assert_eq!(hash.rows(e, &[], &ids), want_e, "{kind} {} module {e}", case["name"]);
+                    let mut hist = Vec::new();
+                    let mut stepped = Vec::new();
+                    for &t in &ids {
+                        stepped.extend(hash.rows(e, &hist, &[t]));
+                        hist = hash.next_history(&hist, &[t]);
+                    }
+                    assert_eq!(stepped, want_e, "{kind} {} module {e} token by token", case["name"]);
+                }
+            }
+        }
     }
 }
