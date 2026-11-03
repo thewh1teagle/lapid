@@ -30,6 +30,16 @@ pub(crate) struct LayerState {
 }
 
 impl LayerState {
+    /// Drop the state of the last `drop` tokens (now at `len` tokens): raw rows kept beyond
+    /// the window by a rewindable forward, and the compressor's rows / open group.
+    pub fn truncate(&mut self, drop: usize, len: usize, ratio: usize) -> Result<bool> {
+        if let Some(r) = &self.raw {
+            let m = r.shape()[0];
+            self.raw = if m > drop { Some(r.slice(0, 0, m - drop)?) } else { None };
+        }
+        if ratio > 0 { self.comp.truncate(len, ratio) } else { Ok(true) }
+    }
+
     pub fn slots(&self) -> Vec<Option<&Tensor>> {
         let mut v = vec![self.raw.as_ref()];
         v.extend(self.comp.slots());
@@ -165,7 +175,7 @@ impl Attention {
         let n = x.shape()[0];
         let r = self.ratio;
         if let Some(c) = &self.comp {
-            let (rows, cs) = c.step(x, pos, &self.rope, &st.comp)?;
+            let (rows, cs) = c.step(x, pos, &self.rope, &st.comp, n <= super::REWIND_MAX)?;
             next.comp = cs;
             shared.comp = rows;
         }
@@ -197,6 +207,37 @@ impl Attention {
         }))
     }
 
+    /// Rotated K = V rows `[m, head_dim]` of `x [m, D]` at `positions` (a DSpark stage's
+    /// window rows, from the target features).
+    pub fn main_kv(&self, x: &Tensor, positions: &[usize]) -> Result<Tensor> {
+        let (m, hd) = (x.shape()[0], self.head_dim);
+        let (cos, sin) = self.rope.tables(positions)?;
+        let kv = self.kv_norm.forward(&self.wkv.forward(x)?)?.cast(DType::F32)?.reshape(&[m, 1, hd])?;
+        self.rope.apply(&kv, &cos, &sin, false)?.reshape(&[m, hd])
+    }
+
+    /// A DSpark stage (upstream `DSparkAttention`): the block `x [b, D]` (normed) at
+    /// positions `pos..pos + b` attends to its window `ring [m, head_dim]` and to every
+    /// block row (not causal). Returns `[b, D]`.
+    pub fn forward_block(&self, x: &Tensor, pos: usize, ring: Option<&Tensor>) -> Result<Tensor> {
+        let b = x.shape()[0];
+        let (h, hd) = (self.n_head, self.head_dim);
+        let positions: Vec<usize> = (pos..pos + b).collect();
+        let (cos, sin) = self.rope.tables(&positions)?;
+        let qr = self.q_norm.forward(&self.wq_a.forward(x)?)?.cast(DType::F32)?;
+        let q = self.wq_b.forward(&qr)?.cast(DType::F32)?.reshape(&[b, h, hd])?;
+        let q = self.rope.apply(&q, &cos, &sin, false)?;
+        let kv = self.main_kv(x, &positions)?;
+        let rows = match ring {
+            Some(r) => Tensor::cat(&[r, &kv], 0)?,
+            None => kv,
+        };
+        let mask = Tensor::zeros(&[b, rows.shape()[0]], DType::F32);
+        let o = sink_attention(&q, &[Keys { rows, mask, block: 0 }], &self.sinks)?;
+        let o = self.rope.apply(&o, &cos, &sin, true)?;
+        grouped_output(&o, &self.wo_a, self.wo_a_act_quant, &self.wo_b, self.groups)
+    }
+
     /// `x [n, D]` (normed block input), absolute positions `pos..pos + n`. Returns the block
     /// output `[n, D]` and the layer's next state.
     pub fn forward(&self, x: &Tensor, pos: usize, st: &LayerState, shared: &mut Shared) -> Result<(Tensor, LayerState)> {
@@ -225,7 +266,9 @@ impl Attention {
             kp <= qp && qp - kp < win
         };
         let mut next = st.clone();
-        let keep = (win - 1).min(s_raw);
+        // A short forward keeps its own rows beyond the window too: it can be rewound.
+        let extra = if n <= super::REWIND_MAX { n } else { 0 };
+        let keep = (win - 1 + extra).min(s_raw);
         next.raw = if keep > 0 { Some(raw.slice(0, s_raw - keep, s_raw)?) } else { None };
 
         let window = if n >= 2 * win {

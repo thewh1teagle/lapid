@@ -25,15 +25,46 @@ pub(crate) struct CompState {
     /// Emitted entries `[pos / ratio, head_dim]` (rotated) and index keys `[.., index_dim]`.
     pub rows: RowBuffer,
     pub keys: RowBuffer,
+    /// Ratio 2, after a short forward (rewindable): the projected rows of its tokens and of
+    /// the group they continued, from position `tail_start` (rebuild the open group).
+    pub tail_kv: Option<Tensor>,
+    pub tail_score: Option<Tensor>,
+    pub tail_start: usize,
 }
 
 impl CompState {
-    pub fn slots(&self) -> [Option<&Tensor>; 4] {
-        [self.pend_kv.as_ref(), self.pend_score.as_ref(), self.rows.buffer(), self.keys.buffer()]
+    pub fn slots(&self) -> [Option<&Tensor>; 6] {
+        [self.pend_kv.as_ref(), self.pend_score.as_ref(), self.rows.buffer(), self.keys.buffer(), self.tail_kv.as_ref(), self.tail_score.as_ref()]
     }
 
-    pub fn slots_mut(&mut self) -> [&mut Option<Tensor>; 4] {
-        [&mut self.pend_kv, &mut self.pend_score, self.rows.buffer_mut(), self.keys.buffer_mut()]
+    pub fn slots_mut(&mut self) -> [&mut Option<Tensor>; 6] {
+        [&mut self.pend_kv, &mut self.pend_score, self.rows.buffer_mut(), self.keys.buffer_mut(), &mut self.tail_kv, &mut self.tail_score]
+    }
+
+    /// Back to the first `len` tokens (within the last short forward, see `tail_*`); false
+    /// when the open group cannot be rebuilt.
+    pub fn truncate(&mut self, len: usize, ratio: usize) -> Result<bool> {
+        if self.slots().iter().all(Option::is_none) {
+            // A layer reading another layer's compressed rows keeps none of its own.
+            return Ok(true);
+        }
+        self.rows.truncate(len / ratio);
+        self.keys.truncate(len / ratio);
+        if ratio < 2 {
+            return Ok(true);
+        }
+        if len.is_multiple_of(ratio) {
+            (self.pend_kv, self.pend_score) = (None, None);
+            return Ok(true);
+        }
+        let (Some(kv), Some(score)) = (&self.tail_kv, &self.tail_score) else { return Ok(false) };
+        let (a, b) = ((len - len % ratio).checked_sub(self.tail_start), len.checked_sub(self.tail_start));
+        let (Some(a), Some(b)) = (a, b) else { return Ok(false) };
+        if b > kv.shape()[0] {
+            return Ok(false);
+        }
+        (self.pend_kv, self.pend_score) = (Some(kv.slice(0, a, b)?), Some(score.slice(0, a, b)?));
+        Ok(true)
     }
 }
 
@@ -69,10 +100,11 @@ fn rope_rows(rope: &TailRope, rows: &Tensor, positions: &[usize]) -> Result<Tens
 impl Compressor {
     /// The latents of the groups closed by `x [n, D]` at positions `pos..pos + n` (and their
     /// first positions), plus the next open-group state.
-    fn latents(&self, x: &Tensor, pos: usize, st: &CompState) -> Result<(Option<Latents>, CompState)> {
+    fn latents(&self, x: &Tensor, pos: usize, st: &CompState, rewindable: bool) -> Result<(Option<Latents>, CompState)> {
         let n = x.shape()[0];
         let r = self.ratio;
         let mut next = st.clone();
+        (next.tail_kv, next.tail_score) = (None, None);
         let kv = self.wkv.forward(x)?.cast(DType::F32)?;
         let Some(wgate) = &self.wgate else {
             let latent = self.norm.forward(&kv)?.cast(DType::F32)?;
@@ -83,6 +115,9 @@ impl Compressor {
             (Some(pk), Some(ps)) => (Tensor::cat(&[pk, &kv], 0)?, Tensor::cat(&[ps, &score], 0)?),
             _ => (kv, score),
         };
+        if rewindable {
+            (next.tail_kv, next.tail_score, next.tail_start) = (Some(all_kv.clone()), Some(all_score.clone()), pos - pos % r);
+        }
         let total = all_kv.shape()[0];
         let nw = total / r;
         let rest = |t: &Tensor| -> Result<Option<Tensor>> { if total > nw * r { Ok(Some(t.slice(0, nw * r, total)?)) } else { Ok(None) } };
@@ -101,9 +136,10 @@ impl Compressor {
     }
 
     /// Feed `x [n, D]` at positions `pos..pos + n`. Returns every row emitted so far (`None`
-    /// while there are none) and the next state.
-    pub fn step(&self, x: &Tensor, pos: usize, rope: &TailRope, st: &CompState) -> Result<(Option<Compressed>, CompState)> {
-        let (new, mut next) = self.latents(x, pos, st)?;
+    /// while there are none) and the next state (`rewindable`: keeps what
+    /// [`CompState::truncate`] needs).
+    pub fn step(&self, x: &Tensor, pos: usize, rope: &TailRope, st: &CompState, rewindable: bool) -> Result<(Option<Compressed>, CompState)> {
+        let (new, mut next) = self.latents(x, pos, st, rewindable)?;
         let Some((latent, positions)) = new else {
             let rows = st.rows.rows()?.zip(st.keys.rows()?).map(|(rows, keys)| Compressed { rows, keys });
             return Ok((rows, next));

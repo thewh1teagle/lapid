@@ -27,18 +27,19 @@ fp32, CPU, greedy. HF transformers has no `deepseek_v41` model (5.22 checked).
 
 The real checkpoint (~475 GB) does not fit this machine, so the proof is `--tiny`: random weights
 with the real V4.1 structure, every feature exercised, narrow dims (see `tiny_config`):
-11 layers, ratios [0,0,2,2,2,2,1,1,1,1,0] (+1 MTP stage, ratio 0), kv sources [2,4,6] (ratio 2 /
-ratio 2 / ratio 1), index sources [2,4,5,6,8] (5 = index source reading layer 4's KV), candidate
+11 layers, ratios [0,0,2,2,2,2,1,1,1,1,0] (+3 DSpark stages, ratio 0), kv sources [2,4,6] (ratio 2
+/ 2 / 1), index sources [2,4,5,6,8] (5 = index source reading layer 4's KV), candidate
 source 6 (block 4, 3 blocks kept) feeding index source 8, index_topk 6 (32 heads x 128), window
 16, dim 64, 8 heads, 8 routed experts (3 active) + 1 shared, expert dim 64, Engram on
 layers 1 and 4 (real hashing: 4-grams, 2 heads, real tokenizer token map / multipliers / primes at
 engram_vocab_size 1000), head dim 512 + rope 64, q/o low rank, grouped wo_a, sinks, YaRN on
 compressed layers, hc 4 + Sinkhorn 20 with the lagged pre-mix, sqrtsoftplus MoE + bias, shared
-expert, SwiGLU clamp, no hash routing, real tokenizer + official `encoding/encoding.py`.
+expert, SwiGLU clamp, no hash routing, real tokenizer + official `encoding/encoding.py`. DSpark:
+3 stages mtp.0-2, block 5, targets [8,9,10], Markov rank 32, 4 routed experts (2 active) + shared.
 
 The tiny checkpoint is saved in the OFFICIAL on-disk format (`deepseek41_ckpt.py`: FP8 e4m3 +
 e8m0 32x32 linears, I8-packed e2m1 + e8m0/32 experts, FP8 Engram tables + e8m0 [rows, D/32],
-BF16/F32 rest, real tensor names incl. bias_vl / vision / aligner / image_* / mtp.0, real
+BF16/F32 rest, real tensor names incl. bias_vl / vision / aligner / image_* / mtp.0-2, real
 config.json layout with text_config / vision_config / quantization_config, sharded with
 model.safetensors.index.json, tokenizer files) in `<out>/model/`; the reference reads it back and
 runs on the exactly dequantized weights.
@@ -56,6 +57,11 @@ Writes:
       c.layers.{i}.index_k [S/ratio,128] (kv-source index keys, after RoPE);
       c.layers.{i}.topk int32 [S,k] (index-source selection, compressed row ids, -1 = none);
       c.layers.{i}.candidates uint8 [S,S/ratio] (candidate-source block mask)
+  <out>/dspark.safetensors (official forward_spec, greedy, K steps; result.json dspark), per case c:
+      c.dspark.logits f32 [K,bs,V] (incl. Markov bias); c.dspark.tokens int32 [K,bs+1] (column 0 =
+      anchor); c.dspark.confidence f32 [K,bs] (raw); c.dspark.main_hidden f32 [S+K-1,3D] (positions
+      0..S+K-2). Step j: anchor gen[j] at position S+j = forward_spec(start_pos=S+j-1) on the
+      main_hidden row of position S+j-1, after seeding with rows 0..S-2 (start_pos 0).
   <out>/result.json: cases.{short,long} (messages_json, thinking / enable_thinking, prompt_text,
       prompt_tokens, generated_tokens, generated_text), template_cases (official encoding),
       tokenizer_cases, checks (self-consistency + feature coverage), engram summary
@@ -239,7 +245,7 @@ def tiny_config(real: dict) -> dict:
         n_routed_experts=8,
         num_experts_per_tok=3,
         sliding_window=16,
-        compress_ratios=[0, 0, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0],
+        compress_ratios=[0, 0, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0],
         kv_source_layer_ids=[2, 4, 6],
         index_source_layer_ids=[2, 4, 5, 6, 8],
         index_topk=6,
@@ -250,8 +256,8 @@ def tiny_config(real: dict) -> dict:
         engram_vocab_size=1000,
         engram_n_heads=2,
         engram_head_dim=64,
-        num_nextn_predict_layers=1,
-        dspark_target_layer_ids=[8, 9],
+        num_nextn_predict_layers=3,
+        dspark_target_layer_ids=[8, 9, 10],
         dspark_markov_rank=32,
         dspark_n_routed_experts=4,
         dspark_num_experts_per_tok=2,
@@ -285,7 +291,7 @@ def model_args(M, E, cfg: dict, max_seq_len: int = 1024, with_extras: bool = Tru
         engram_head_dim=t["engram_head_dim"], engram_pad_id=t["engram_pad_token_id"],
         engram_compressed_vocab_size=t["engram_compressed_vocab_size"], image_token_id=cfg["image_token_id"],
     )
-    if with_extras:  # vision tower + DSpark stage, only so their tensors exist in the checkpoint
+    if with_extras:  # vision tower (only so its tensors exist in the checkpoint) + DSpark stages
         a.update(
             vision_n_layers=v["num_hidden_layers"], vision_dim=v["hidden_size"], vision_n_heads=v["num_attention_heads"],
             vision_inter_dim=v["intermediate_size"], vision_patch_size=v["patch_size"], vision_rope_theta=v["rope_theta"],
@@ -362,7 +368,8 @@ class Taps:
                 ex.w1.register_forward_hook(self._clamp(gate=True))
                 ex.w3.register_forward_hook(self._clamp(gate=False))
         self.limit = model.layers[0].ffn.shared_experts.swiglu_limit
-        self.margin: dict[str, float] = {}
+        self.margin: dict[str, float] = {}  # keys prefixed with self.prefix ("dspark." while drafting)
+        self.prefix = ""
         orig = torch.Tensor.topk
 
         def topk(t, k, *a, **kw):  # relative gap between the k-th and (k+1)-th score
@@ -373,7 +380,7 @@ class Taps:
                 ok = torch.isfinite(hi) & torch.isfinite(lo)
                 if ok.any():
                     m = float(((hi - lo) / (hi.abs() + lo.abs() + 1e-30))[ok].min())
-                    self.margin[caller] = min(self.margin.get(caller, 1.0), m)
+                    self.margin[self.prefix + caller] = min(self.margin.get(self.prefix + caller, 1.0), m)
             return orig(t, k, *a, **kw)
 
         torch.Tensor.topk = topk
@@ -408,7 +415,9 @@ class Taps:
 
 
 def forward(M, model, ids: torch.Tensor, start_pos: int, taps: Taps | None = None):
-    """Official Transformer.forward (text only) with taps and all-row logits. ids [1, S]."""
+    """Official Transformer.forward (text only) with taps and all-row logits. ids [1, S].
+    rec["main_hidden"] [S, n_targets*D]: the DSpark target features, as upstream (mean over the hc
+    copies of the stream entering each target layer, after its Engram)."""
     if taps is not None:
         taps.out, taps.on = {}, True
     hashes = model.engram_hash(ids, start_pos, None)
@@ -417,17 +426,21 @@ def forward(M, model, ids: torch.Tensor, start_pos: int, taps: Taps | None = Non
     rec["embed"] = h[0]
     h = h.unsqueeze(2).repeat(1, 1, model.hc_mult, 1)
     pre_mix = M.make_identity_pre_mix(h, model.hc_mult)
+    main_hiddens = []
     for i, layer in enumerate(model.layers):
         if layer.engram is not None:
             rows = hashes[:, :, layer.engram.layer_hash_index, :]
             h = layer.engram(h, rows, None)
             rec[f"layers.{i}.engram"] = h[0].flatten(1)
             rec[f"layers.{i}.engram_rows"] = rows[0]
+        if i in model.target_layer_ids:
+            main_hiddens.append(h.mean(dim=2)[0])
         h, pre_mix = layer(h, start_pos, pre_mix, None)
         rec[f"layers.{i}"] = h[0].flatten(1)
     h = layer.hc_pre(h, pre_mix)
     n = model.norm(h)
     rec["norm"] = n[0]
+    rec["main_hidden"] = torch.cat(main_hiddens, dim=-1) if main_hiddens else None
     logits = F.linear(n.float(), model.head.weight)[0]
     if taps is not None:
         taps.on = False
@@ -446,6 +459,58 @@ def greedy(M, model, prompt: list[int], max_new: int, eos: int):
         logits, _ = forward(M, model, torch.tensor([[nxt]]), len(prompt) + len(gen) - 1)
         steps.append(logits[-1])
     return gen, torch.stack(steps)
+
+
+def greedy_with_dspark(M, model, prompt: list[int], gen: list[int], steps: int, taps: Taps):
+    """The greedy run again (same cached decode) + the official DSpark draft after the prefill and
+    after each of the first steps-1 decode steps -> per-step (output_ids, logits, confidence), the
+    main_hidden rows used, the anchors and their positions."""
+    s = len(prompt)
+    logits, rec = forward(M, model, torch.tensor([prompt]), 0)
+    assert int(logits[-1].argmax()) == gen[0]
+    mh, main = [rec["main_hidden"]], rec["main_hidden"][None]  # [1, S, 3D]
+
+    def spec(tok, main_hidden, start_pos):
+        taps.on, taps.prefix = True, "dspark."
+        r = model.forward_spec(torch.tensor([tok]), main_hidden, start_pos)
+        taps.on, taps.prefix = False, ""
+        return r
+
+    assert spec(prompt[0], main[:, : s - 1], 0) is None  # seeds the window caches with 0..S-2
+    drafts = [spec(gen[0], main[:, s - 1 :], s - 1)]
+    for j in range(steps - 1):
+        logits, rec = forward(M, model, torch.tensor([[gen[j]]]), s + j)
+        assert int(logits[-1].argmax()) == gen[j + 1], "decode diverged from greedy"
+        mh.append(rec["main_hidden"])
+        drafts.append(spec(gen[j + 1], rec["main_hidden"][None], s + j))
+    return drafts, torch.cat(mh), gen[:steps], [s + j for j in range(steps)]
+
+
+def record_dspark(M, model, ids, gen, k, taps, rec, out: dict, c: str):
+    """DSpark target features vs the official Transformer.forward, then k drafts into out."""
+    _, _, off_mh = model.forward(torch.tensor([ids]), 0)
+    drafts, mh, anchors, positions = greedy_with_dspark(M, model, ids, gen, k, taps)  # resets the caches
+    d_ids, d_logits, d_conf = (torch.cat([d[i] for d in drafts]) for i in range(3))
+    assert mh.shape[0] == len(ids) + k - 1
+    out.update({f"{c}.dspark.logits": f32(d_logits), f"{c}.dspark.tokens": np.ascontiguousarray(d_ids.int().numpy()),
+                f"{c}.dspark.confidence": f32(d_conf), f"{c}.dspark.main_hidden": f32(mh)})
+    top2 = d_logits.topk(2, dim=-1).values
+    margin = (top2[..., 0] - top2[..., 1]) / (top2[..., 0].abs() + top2[..., 1].abs() + 1e-30)
+    hit = [[int(t) == g for t, g in zip(d_ids[j, 1:], gen[j + 1 :])] + [False] for j in range(k)]
+    accepted = [h.index(False) for h in hit]  # leading drafts equal to the greedy continuation
+    check = {
+        "main_hidden_vs_official_forward_max_abs_diff": float((off_mh[0] - rec["main_hidden"]).abs().max()),
+        "anchor_column_ok": bool((d_ids[:, 0] == torch.tensor(anchors)).all()),
+        "draft_token0_argmax_ok": bool((d_ids[:, 1] == d_logits[:, 0].argmax(-1)).all()),
+        "draft_tokens_are_argmax": bool((d_ids[:, 1:] == d_logits.argmax(-1)).all()),
+        "markov_argmax_min_relative_margin": float(margin.min()),
+        "gate_topk_min_relative_margin": taps.margin.pop("dspark.Gate", None),
+        "accepted_prefix": accepted, "confidence_range": [float(d_conf.min()), float(d_conf.max())],
+    }
+    bs = d_logits.size(1)
+    return check, {"steps": k, "prompt_len": len(ids), "anchors": anchors, "anchor_positions": positions,
+            "start_pos": [p - 1 for p in positions], "block_positions": [list(range(p, p + bs)) for p in positions],
+            "predicted_positions": [list(range(p + 1, p + bs + 1)) for p in positions]}
 
 
 # ------------------------------------------------------------------ checks
@@ -502,6 +567,7 @@ def main() -> int:
     ap.add_argument("--max-new-tokens", default=40, type=int)
     ap.add_argument("--gen-logit-steps", default=12, type=int)
     ap.add_argument("--long-tail", default=8, type=int)
+    ap.add_argument("--dspark-steps", default=6, type=int)
     ap.add_argument("--seed", default=3, type=int, help="weight seed (the default keeps every top-k decision clear of ties)")
     args_cli = ap.parse_args()
     if not args_cli.tiny:
@@ -524,7 +590,8 @@ def main() -> int:
 
     tensors: dict[str, np.ndarray] = {}
     debug: dict[str, np.ndarray] = {}
-    cases, checks = {}, {"coverage": {}, "decode_vs_full": {}}
+    dspark, dspark_cases = {}, {}  # dspark.safetensors, result.json dspark.cases
+    cases, checks = {}, {"coverage": {}, "decode_vs_full": {}, "dspark": {}}
     for cname, messages, thinking in (("short", SHORT_MESSAGES, False), ("long", LONG_MESSAGES, False)):
         prompt = enc.encode_messages(messages, thinking_mode="thinking" if thinking else "chat")
         ids = tok(prompt, add_special_tokens=False).input_ids
@@ -546,6 +613,8 @@ def main() -> int:
         gen, gen_logits = greedy(M, model, ids, args_cli.max_new_tokens, eos)
         tensors[f"{cname}.gen.logits"] = f32(gen_logits[: args_cli.gen_logit_steps])
         checks["decode_vs_full"][cname] = decode_vs_full(M, model, ids, gen, gen_logits[: args_cli.gen_logit_steps])
+        k = min(args_cli.dspark_steps, len(gen))
+        checks["dspark"][cname], dspark_cases[cname] = record_dspark(M, model, ids, gen, k, taps, rec, dspark, cname)
         cases[cname] = {
             "messages_json": json.dumps(messages, ensure_ascii=False),
             "thinking": thinking,
@@ -594,6 +663,7 @@ def main() -> int:
 
     save_file(tensors, str(out / "activations.safetensors"))
     save_file(debug, str(out / "debug.safetensors"))
+    save_file(dspark, str(out / "dspark.safetensors"))
     import transformers
 
     result = {
@@ -612,6 +682,10 @@ def main() -> int:
         "index_source_layers": list(args.index_source_layers),
         "candidate_source_layer": args.candidate_source_layer,
         "engram_layers": list(args.engram_layer_ids),
+        "dspark": {"block_size": args.dspark_block_size, "noise_token_id": args.dspark_noise_token_id,
+                   "target_layers": list(args.dspark_target_layer_ids), "markov_rank": args.dspark_markov_rank,
+                   "n_experts": args.dspark_n_routed_experts, "top_k": args.dspark_n_activated_experts,
+                   "stages": args.n_mtp_layers, "window": args.window_size, "temperature": 0.0, "cases": dspark_cases},
         "checkpoint_kinds": {k: sum(1 for v in kinds.values() if v == k) for k in sorted(set(kinds.values()))},
         "checks": checks,
         "versions": {"torch": torch.__version__, "transformers": transformers.__version__, "python": sys.version.split()[0]},
