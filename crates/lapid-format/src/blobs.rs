@@ -14,7 +14,12 @@ use lapid_tensor::{Error, Result, bail};
 use crate::BlobInfo;
 use crate::imp::{align_up, check_disjoint, is_hex_hash};
 
-pub(crate) const MAX_BLOBS_SECTION: u64 = 1 << 30;
+/// BLOBS section limit (large tables, e.g. embedding hash tables, are streamed blobs).
+pub(crate) const MAX_BLOBS_SECTION: u64 = 1 << 42;
+/// Sections up to this size have their section hash checked on open; larger ones are
+/// checked blob by blob by `verify_tensors` (hashing hundreds of GB on every open is not
+/// an option).
+pub(crate) const VERIFY_ON_OPEN: u64 = 256 << 20;
 pub(crate) const MAX_BLOB_INDEX: u64 = 16 << 20;
 pub(crate) const MAX_BLOBS: usize = 65_536;
 pub(crate) const BLOB_ALIGN: u64 = 256;
@@ -82,23 +87,18 @@ pub(crate) fn parse(sec: &[u8]) -> Result<Vec<BlobInfo>> {
     Ok(blobs)
 }
 
-/// Encodes a BLOBS section from `(name, media_type, bytes)` entries (already validated).
-pub(crate) fn encode(entries: &[(String, String, Vec<u8>)]) -> Result<Vec<u8>> {
+/// Blob placement: the index entries and their JSON for blobs given as
+/// `(name, media_type, nbytes, hash)` (already validated); returns also the section length.
+pub(crate) fn layout(entries: &[(&str, &str, u64, &str)]) -> Result<(Vec<BlobInfo>, Vec<u8>, u64)> {
     // Offsets depend on the index length, which depends on the offsets' digits: iterate
     // until the layout is stable (converges in a couple of rounds).
     let mut index_len = 0u64;
     let (infos, index) = loop {
         let mut pos = align_up(8 + index_len, BLOB_ALIGN);
         let mut infos = Vec::with_capacity(entries.len());
-        for (name, media_type, bytes) in entries {
-            infos.push(BlobInfo {
-                name: name.clone(),
-                media_type: media_type.clone(),
-                offset: pos,
-                nbytes: bytes.len() as u64,
-                hash: blake3::hash(bytes).to_hex().to_string(),
-            });
-            pos = align_up(pos + bytes.len() as u64, BLOB_ALIGN);
+        for &(name, media_type, nbytes, hash) in entries {
+            infos.push(BlobInfo { name: name.into(), media_type: media_type.into(), offset: pos, nbytes, hash: hash.into() });
+            pos = align_up(pos + nbytes, BLOB_ALIGN);
         }
         let index = serde_json::to_vec(&infos)?;
         if align_up(8 + index.len() as u64, BLOB_ALIGN) == align_up(8 + index_len, BLOB_ALIGN) {
@@ -113,6 +113,16 @@ pub(crate) fn encode(entries: &[(String, String, Vec<u8>)]) -> Result<Vec<u8>> {
     if total > MAX_BLOBS_SECTION {
         bail!("limit_exceeded", "BLOBS section is {total} B (limit {MAX_BLOBS_SECTION})");
     }
+    Ok((infos, index, total))
+}
+
+/// Encodes a whole BLOBS section in memory (tests).
+#[cfg(test)]
+pub(crate) fn encode(entries: &[(String, String, Vec<u8>)]) -> Result<Vec<u8>> {
+    let hashes: Vec<String> = entries.iter().map(|e| blake3::hash(&e.2).to_hex().to_string()).collect();
+    let list: Vec<(&str, &str, u64, &str)> =
+        entries.iter().zip(&hashes).map(|(e, h)| (e.0.as_str(), e.1.as_str(), e.2.len() as u64, h.as_str())).collect();
+    let (infos, index, total) = layout(&list)?;
     let mut out = vec![0u8; total as usize];
     out[..8].copy_from_slice(&(index.len() as u64).to_le_bytes());
     out[8..8 + index.len()].copy_from_slice(&index);

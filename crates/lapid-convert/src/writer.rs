@@ -63,6 +63,7 @@ pub struct ModelWriter {
     dtype: OutDType,
     role: RoleArc,
     written: BTreeSet<String>,
+    blobs: BTreeSet<String>,
     total: usize,
     tty: bool,
     n_layer: Option<usize>,
@@ -104,6 +105,7 @@ impl ModelWriter {
             dtype,
             role,
             written: BTreeSet::new(),
+            blobs: BTreeSet::new(),
             total,
             tty: std::io::stderr().is_terminal(),
             n_layer,
@@ -142,15 +144,20 @@ impl ModelWriter {
     /// Policy-encode and write an f32 tensor (or its prequantized bytes, if set).
     pub fn add_f32(&mut self, name: &str, shape: &[usize], data: &[f32]) -> Result<()> {
         if let Some((dt, bytes)) = self.prequantized.remove(name) {
-            return self.add_raw(name, dt, shape, &bytes);
+            return self.add_owned(name, dt, shape, bytes);
         }
         let (dt, bytes) = encode(self.target(name, shape), data, shape)?;
-        self.add_raw(name, dt, shape, &bytes)
+        self.add_owned(name, dt, shape, bytes)
     }
 
     /// Whether `add_f32(name, ..)` will write prequantized bytes (the f32 data is ignored).
     pub fn is_prequantized(&self, name: &str) -> bool {
         self.prequantized.contains_key(name)
+    }
+
+    /// [`add_raw`](Self::add_raw) of an owned buffer (freed once written).
+    pub fn add_owned(&mut self, name: &str, dtype: DType, shape: &[usize], bytes: Vec<u8>) -> Result<()> {
+        self.add_raw(name, dtype, shape, &bytes)
     }
 
     /// Write already-encoded bytes.
@@ -163,14 +170,27 @@ impl ModelWriter {
 
     /// Store a named byte blob (tokenizer files, templates, ...) in the BLOBS section.
     pub fn add_blob(&mut self, name: &str, media_type: &str, bytes: &[u8]) -> Result<()> {
-        self.writer.add_blob(name, media_type, bytes)
+        self.writer.add_blob(name, media_type, bytes)?;
+        self.blobs.insert(name.to_string());
+        Ok(())
     }
 
-    /// Check that every `expected` tensor was written, then finish the file atomically.
-    pub fn finish(self, expected: &[String]) -> Result<()> {
+    /// Store `data[range]` of a shared image (e.g. a source mmap) as a blob without copying
+    /// it (streamed into the file by `finish`).
+    pub fn add_blob_shared(&mut self, name: &str, media_type: &str, data: lapid_format::Bytes, range: std::ops::Range<usize>) -> Result<()> {
+        self.writer.add_blob_shared(name, media_type, data, range)?;
+        self.blobs.insert(name.to_string());
+        Ok(())
+    }
+
+    /// Check that every `expected` tensor (or blob) was written, then finish the file
+    /// atomically (streaming the shared blobs).
+    pub fn finish(mut self, expected: &[String]) -> Result<()> {
         if self.tty {
             let _ = writeln!(std::io::stderr());
         }
+        let blobs = std::mem::take(&mut self.blobs);
+        self.written.extend(blobs);
         check_complete(&self.written, expected)?;
         self.writer.finish()
     }
@@ -194,6 +214,19 @@ mod tests {
         assert_eq!(find_layer_count(&json!({"name": "x", "lfm3": {"num_hidden_layers": 24}})), Some(24));
         assert_eq!(find_layer_count(&json!({"a": {"b": {"n_layer": 6}}, "c": 1})), Some(6));
         assert_eq!(find_layer_count(&json!({"a": 1})), None);
+    }
+
+    #[test]
+    fn blobs_count_as_written() {
+        let out = std::env::temp_dir().join(format!("lapid-writer-blobs-{}.lapid", std::process::id()));
+        let meta = metadata("m", "arch", OutDType::F32, "mit", json!({"repo": "x/y"}));
+        let mut w = ModelWriter::create(&out, meta, OutDType::F32, |_, _| Role::Param, 1).expect("create");
+        w.add_f32("a", &[2], &[1.0, 2.0]).expect("a");
+        w.add_blob("t.json", "application/json", b"{}").expect("blob");
+        w.finish(&["a".into(), "t.json".into()]).expect("finish");
+        let r = lapid_format::Reader::open(&out).expect("open");
+        assert_eq!(r.blob("t.json"), Some(&b"{}"[..]));
+        std::fs::remove_file(&out).ok();
     }
 
     #[test]

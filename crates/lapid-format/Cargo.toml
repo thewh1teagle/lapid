@@ -14,3 +14,5 @@ blake3.workspace = true
 # No mmap on wasm (files are read into memory there; prefer `Reader::from_bytes`).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 memmap2.workspace = true
+# Multithreaded hashing of large tensors and blobs (pure Rust).
+blake3 = { workspace = true, features = ["rayon"] }
