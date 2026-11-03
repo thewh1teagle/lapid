@@ -21,7 +21,8 @@
 //! "kind" ("model" | "extra") and "extends" (for extras).
 //! Readers ignore unknown optional sections and refuse unknown required ones / unknown
 //! required_features bits. Limits: metadata ≤ 16 MiB, index ≤ 64 MiB, ≤ 64 sections,
-//! ≤ 1_000_000 tensors, BLOBS ≤ 1 GiB / 65 536 blobs, ≤ 64 components, every range inside
+//! ≤ 1_000_000 tensors, BLOBS ≤ 4 TiB / 65 536 blobs (section hash checked on open up to
+//! 256 MiB), ≤ 64 components, every range inside
 //! the file and non-overlapping.
 //!
 //! A [`Reader`] is backed by one shared byte image ([`Bytes`]): a read-only mmap for
@@ -39,6 +40,7 @@ mod blobs;
 pub mod cmd;
 mod imp;
 mod meta;
+mod write;
 
 pub const MAGIC: [u8; 4] = *b"LPID";
 pub const VERSION: u32 = 1;
@@ -217,23 +219,31 @@ impl Reader {
 
 /// Streaming writer: tensors are written to disk as they are added (no full-model buffering).
 pub struct Writer {
-    inner: imp::WriterState,
+    inner: write::WriterState,
 }
 
 impl Writer {
     pub fn create(path: impl AsRef<Path>, metadata: serde_json::Value) -> Result<Writer> {
-        Ok(Writer { inner: imp::WriterState::create(path.as_ref(), metadata)? })
+        Ok(Writer { inner: write::WriterState::create(path.as_ref(), metadata)? })
     }
 
     pub fn add(&mut self, name: &str, dtype: DType, shape: &[usize], bytes: &[u8]) -> Result<()> {
         self.inner.add(name, dtype, shape, bytes)
     }
 
-    /// Add a named byte blob (BLOBS section). Blobs are buffered in memory until `finish`
-    /// (they are small assets; large arrays belong in tensors). Errors: "invalid_argument"
-    /// (bad/duplicate name or media type), "limit_exceeded".
+    /// Add a named byte blob (BLOBS section), copied into memory until `finish` (small
+    /// assets; see [`add_blob_shared`](Self::add_blob_shared) for large ones). Errors:
+    /// "invalid_argument" (bad/duplicate name or media type), "limit_exceeded".
     pub fn add_blob(&mut self, name: &str, media_type: &str, bytes: &[u8]) -> Result<()> {
         self.inner.add_blob(name, media_type, bytes)
+    }
+
+    /// Add the blob `data[range]` of a shared image (e.g. a source file mmap) without
+    /// copying it: hashed now, streamed into the file in chunks by `finish` (so `data`
+    /// must stay unchanged until then). Errors as [`add_blob`](Self::add_blob), plus
+    /// "invalid_argument" for a range outside the image.
+    pub fn add_blob_shared(&mut self, name: &str, media_type: &str, data: Bytes, range: std::ops::Range<usize>) -> Result<()> {
+        self.inner.add_blob_shared(name, media_type, data, range)
     }
 
     /// Writes index + blobs + table + header. Validates required metadata keys first

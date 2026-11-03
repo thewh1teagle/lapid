@@ -136,7 +136,7 @@ impl GgmlType {
     /// Storage bytes of `n` elements. Errors: "unsupported_gguf_type", "format" (n not a
     /// whole number of blocks).
     /// The lapid quant format storing this type without conversion: Q8_0 → Int8 and
-    /// Q4_0 → Int4 (lossless repack), Q4_K/Q5_K/Q6_K → the same k-quant (as-is).
+    /// Q4_0 → Int4 (lossless repack), Q4_K/Q5_K/Q6_K and MXFP4 → the same format (as-is).
     pub fn lapid_format(self) -> Option<lapid_quant::Format> {
         use lapid_quant::Format;
         Some(match self {
@@ -145,6 +145,7 @@ impl GgmlType {
             GgmlType::Q4K => Format::Q4K,
             GgmlType::Q5K => Format::Q5K,
             GgmlType::Q6K => Format::Q6K,
+            GgmlType::Other(MXFP4) => Format::Mxfp4,
             _ => return None,
         })
     }

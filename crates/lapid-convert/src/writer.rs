@@ -63,6 +63,7 @@ pub struct ModelWriter {
     dtype: OutDType,
     role: RoleArc,
     written: BTreeSet<String>,
+    blobs: BTreeSet<String>,
     total: usize,
     tty: bool,
     n_layer: Option<usize>,
@@ -104,6 +105,7 @@ impl ModelWriter {
             dtype,
             role,
             written: BTreeSet::new(),
+            blobs: BTreeSet::new(),
             total,
             tty: std::io::stderr().is_terminal(),
             n_layer,
@@ -163,14 +165,27 @@ impl ModelWriter {
 
     /// Store a named byte blob (tokenizer files, templates, ...) in the BLOBS section.
     pub fn add_blob(&mut self, name: &str, media_type: &str, bytes: &[u8]) -> Result<()> {
-        self.writer.add_blob(name, media_type, bytes)
+        self.writer.add_blob(name, media_type, bytes)?;
+        self.blobs.insert(name.to_string());
+        Ok(())
     }
 
-    /// Check that every `expected` tensor was written, then finish the file atomically.
-    pub fn finish(self, expected: &[String]) -> Result<()> {
+    /// Store `data[range]` of a shared image (e.g. a source mmap) as a blob without copying
+    /// it (streamed into the file by `finish`).
+    pub fn add_blob_shared(&mut self, name: &str, media_type: &str, data: lapid_format::Bytes, range: std::ops::Range<usize>) -> Result<()> {
+        self.writer.add_blob_shared(name, media_type, data, range)?;
+        self.blobs.insert(name.to_string());
+        Ok(())
+    }
+
+    /// Check that every `expected` tensor (or blob) was written, then finish the file
+    /// atomically (streaming the shared blobs).
+    pub fn finish(mut self, expected: &[String]) -> Result<()> {
         if self.tty {
             let _ = writeln!(std::io::stderr());
         }
+        let blobs = std::mem::take(&mut self.blobs);
+        self.written.extend(blobs);
         check_complete(&self.written, expected)?;
         self.writer.finish()
     }

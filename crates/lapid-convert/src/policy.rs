@@ -159,8 +159,16 @@ pub fn encode(target: Target, data: &[f32], shape: &[usize]) -> Result<(DType, V
         bail!("shape_mismatch", "encode: {} values for shape {shape:?}", data.len());
     }
     let bytes = match target {
-        Target::F32 => data.iter().flat_map(|v| v.to_le_bytes()).collect(),
-        Target::F16 => data.iter().flat_map(|v| f16::from_f32(*v).to_le_bytes()).collect(),
+        Target::F32 => {
+            let mut b = vec![0u8; numel * 4];
+            crate::parallel::convert(data, &mut b, 4, |v, o| o.copy_from_slice(&v.to_le_bytes()));
+            b
+        }
+        Target::F16 => {
+            let mut b = vec![0u8; numel * 2];
+            crate::parallel::convert(data, &mut b, 2, |v, o| o.copy_from_slice(&f16::from_f32(*v).to_le_bytes()));
+            b
+        }
         Target::Quant(f) => {
             if !quantizable_as(f, shape) {
                 bail!(
@@ -172,12 +180,35 @@ pub fn encode(target: Target, data: &[f32], shape: &[usize]) -> Result<(DType, V
             let (rows, cols) = (shape[shape.len() - 2], shape[shape.len() - 1]);
             let mut out = Vec::new();
             for m in data.chunks_exact(rows * cols) {
-                out.extend(lapid_quant::quantize(f, m, rows, cols));
+                out.extend(quantize_par(f, m, rows, cols));
             }
             out
         }
     };
     Ok((target.dtype(), bytes))
+}
+
+/// `lapid_quant::quantize` of a `[rows, cols]` matrix on all cores: row ranges are
+/// quantized separately and spliced into the full layout (quants and scales are row-major in
+/// every format), so the bytes are identical.
+pub fn quantize_par(f: Format, data: &[f32], rows: usize, cols: usize) -> Vec<u8> {
+    let l = lapid_quant::layout(f, rows, cols);
+    // Small matrices: not worth the threads.
+    if rows * cols < 1 << 18 || rows < 2 {
+        return lapid_quant::quantize(f, data, rows, cols);
+    }
+    let parts = crate::parallel::map_ranges(rows, 64, |r| (r.clone(), lapid_quant::quantize(f, &data[r.start * cols..r.end * cols], r.len(), cols)));
+    let mut out = vec![0u8; l.total];
+    let (qrow, srow) = (l.qs_bytes / rows, l.scales_bytes / rows);
+    for (r, b) in parts {
+        let pl = lapid_quant::layout(f, r.len(), cols);
+        out[l.qs_offset + r.start * qrow..l.qs_offset + r.end * qrow].copy_from_slice(&b[pl.qs_offset..pl.qs_offset + pl.qs_bytes]);
+        if srow > 0 {
+            out[l.scales_offset + r.start * srow..l.scales_offset + r.end * srow]
+                .copy_from_slice(&b[pl.scales_offset..pl.scales_offset + pl.scales_bytes]);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -234,5 +265,14 @@ mod tests {
         assert_eq!((dt, b.len()), (DType::Q4K, DType::Q4K.storage_bytes(&[2, 1, 256])));
         assert!(encode(Target::F32, &x[..64], &[3]).is_err());
         assert!(encode(Target::Quant(Format::Q6K), &x[..64], &[2, 32]).is_err());
+    }
+
+    #[test]
+    fn parallel_quantize_identical() {
+        let (rows, cols) = (1031, 512);
+        let x: Vec<f32> = (0..rows * cols).map(|i| ((i * 7919) % 1013) as f32 / 97.0 - 5.0).collect();
+        for f in [Format::Int8, Format::Int4, Format::Q4K, Format::Q6K, Format::Mxfp4] {
+            assert!(quantize_par(f, &x, rows, cols) == lapid_quant::quantize(f, &x, rows, cols), "{f:?}");
+        }
     }
 }

@@ -158,6 +158,11 @@ impl GgufFile {
         self.tensors.iter().find(|t| t.name == name)
     }
 
+    /// The file mapping and the byte range of `t` in it (zero-copy streaming into a blob).
+    pub fn shared(&self, t: &GgufTensor) -> (lapid_format::Bytes, std::ops::Range<usize>) {
+        (self.mmap.clone(), t.offset as usize..(t.offset + t.nbytes) as usize)
+    }
+
     /// Raw (ggml-encoded) bytes of a tensor, zero copy.
     pub fn tensor_data(&self, t: &GgufTensor) -> &[u8] {
         &self.mmap[t.offset as usize..(t.offset + t.nbytes) as usize]
@@ -195,7 +200,7 @@ pub fn write_ggml_tensor(w: &mut ModelWriter, name: &str, t: &GgufTensor, data: 
         let target = w.target(name, &shape);
         let keep = match (t.ggml_type.lapid_format(), target) {
             (Some(f @ (Format::Int8 | Format::Int4)), Target::Quant(g)) if f == g => Some(f),
-            (Some(f @ (Format::Q4K | Format::Q5K | Format::Q6K)), Target::Quant(_)) => Some(f),
+            (Some(f @ (Format::Q4K | Format::Q5K | Format::Q6K | Format::Mxfp4)), Target::Quant(_)) => Some(f),
             _ => None,
         };
         // ggml blocks run along ne[0] = the last row-major axis, which the policy quantizes.
@@ -380,4 +385,4 @@ pub fn parse(b: &[u8]) -> Result<Parsed> {
 
 #[cfg(test)]
 #[path = "gguf_tests.rs"]
-mod tests;
+pub(crate) mod tests;
