@@ -51,6 +51,7 @@ pub mod audio;
 pub mod cmd;
 pub mod convert;
 pub mod deepseek4;
+pub mod deepseek41;
 pub mod embeddinggemma;
 pub mod gemma4;
 pub mod lfm3;

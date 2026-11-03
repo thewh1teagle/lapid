@@ -27,18 +27,18 @@ fn err(m: impl Into<String>) -> Error {
 }
 
 /// `json.dumps(v, ensure_ascii=False)` through the Jinja `tojson` filter.
-fn to_json(v: &Value) -> Result<String> {
+pub(crate) fn to_json(v: &Value) -> Result<String> {
     Template::parse("{{ v | tojson }}")?.render(&[("v", v.clone())])
 }
 
-fn get<'a>(m: &'a Value, key: &str) -> Option<&'a Value> {
+pub(crate) fn get<'a>(m: &'a Value, key: &str) -> Option<&'a Value> {
     match m {
         Value::Map(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
         _ => None,
     }
 }
 
-fn set(m: &mut Value, key: &str, v: Value) {
+pub(crate) fn set(m: &mut Value, key: &str, v: Value) {
     if let Value::Map(pairs) = m {
         match pairs.iter_mut().find(|(k, _)| k == key) {
             Some(slot) => slot.1 = v,
@@ -47,13 +47,13 @@ fn set(m: &mut Value, key: &str, v: Value) {
     }
 }
 
-fn remove(m: &mut Value, key: &str) {
+pub(crate) fn remove(m: &mut Value, key: &str) {
     if let Value::Map(pairs) = m {
         pairs.retain(|(k, _)| k != key);
     }
 }
 
-fn s(v: Option<&Value>) -> String {
+pub(crate) fn s(v: Option<&Value>) -> String {
     match v {
         Some(Value::Str(x)) => x.clone(),
         Some(Value::None) | Some(Value::Undefined) | None => String::new(),
@@ -61,11 +61,11 @@ fn s(v: Option<&Value>) -> String {
     }
 }
 
-fn role(m: &Value) -> String {
+pub(crate) fn role(m: &Value) -> String {
     s(get(m, "role"))
 }
 
-fn truthy(v: Option<&Value>) -> bool {
+pub(crate) fn truthy(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::None) | Some(Value::Undefined) | Some(Value::Bool(false)) => false,
         Some(Value::Str(x)) => !x.is_empty(),
@@ -75,11 +75,11 @@ fn truthy(v: Option<&Value>) -> bool {
     }
 }
 
-fn map(pairs: Vec<(&str, Value)>) -> Value {
+pub(crate) fn map(pairs: Vec<(&str, Value)>) -> Value {
     Value::Map(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
-fn list(v: Option<&Value>) -> &[Value] {
+pub(crate) fn list(v: Option<&Value>) -> &[Value] {
     match v {
         Some(Value::List(x)) => x,
         _ => &[],
@@ -157,7 +157,7 @@ fn merge_tool_messages(messages: &[Value]) -> Vec<Value> {
     merged
 }
 
-fn sort_tool_results(messages: &mut [Value]) {
+pub(crate) fn sort_tool_results(messages: &mut [Value]) {
     let mut order: Vec<(String, usize)> = Vec::new();
     for msg in messages.iter_mut() {
         let r = role(msg);
@@ -196,6 +196,12 @@ fn last_user_index(messages: &[Value]) -> Option<usize> {
 
 fn drop_thinking_messages(messages: Vec<Value>) -> Vec<Value> {
     let last = last_user_index(&messages);
+    drop_thinking_before(messages, last)
+}
+
+/// Drop `reasoning_content` from assistant turns before `last` (the last user turn) and any
+/// message outside the kept roles there; `None` keeps everything.
+pub(crate) fn drop_thinking_before(messages: Vec<Value>, last: Option<usize>) -> Vec<Value> {
     let mut out = Vec::new();
     for (i, mut m) in messages.into_iter().enumerate() {
         let r = role(&m);
@@ -210,7 +216,7 @@ fn drop_thinking_messages(messages: Vec<Value>) -> Vec<Value> {
     out
 }
 
-fn render_user(msg: &Value) -> String {
+pub(crate) fn render_user(msg: &Value) -> String {
     let blocks = list(get(msg, "content_blocks"));
     if blocks.is_empty() {
         return s(get(msg, "content"));

@@ -1,0 +1,1581 @@
+[
+ {
+  "name": "effort_None",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_low",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": "low",
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 50 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_high",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": "high",
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_max",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": "max",
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 100 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_1",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": 1,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 1 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_42",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": 42,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 42 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_100",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": 100,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 100 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>"
+ },
+ {
+  "name": "effort_bad_0",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": 0,
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: 0, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "effort_bad_101",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": 101,
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: 101, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "effort_bad_-1",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": -1,
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: -1, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "effort_bad_medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": "medium",
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: medium, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "effort_bad_True",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": true,
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: True, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "effort_bad_1.5",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   }
+  ],
+  "thinking": true,
+  "effort": 1.5,
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: 1.5, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "chat_effort_ignored",
+  "messages": [
+   {
+    "role": "user",
+    "content": "hello"
+   }
+  ],
+  "thinking": false,
+  "effort": "max",
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜></think>"
+ },
+ {
+  "name": "chat_bad_effort",
+  "messages": [
+   {
+    "role": "user",
+    "content": "hello"
+   }
+  ],
+  "thinking": false,
+  "effort": 101,
+  "error": "AssertionError: Invalid reasoning effort for deepseek_v41: 101, should be int within [1,100] or ['low', 'high', 'max']"
+ },
+ {
+  "name": "leading_system",
+  "messages": [
+   {
+    "role": "system",
+    "content": "sys"
+   },
+   {
+    "role": "user",
+    "content": "hello"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>sys<｜User｜>hello<｜Assistant｜></think>"
+ },
+ {
+  "name": "mid_system",
+  "messages": [
+   {
+    "role": "system",
+    "content": "sys"
+   },
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1",
+    "reasoning_content": "r1"
+   },
+   {
+    "role": "system",
+    "content": "mid sys"
+   }
+  ],
+  "thinking": true,
+  "effort": 88,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 88 (range 1-100, the higher the value, the more thorough the reasoning)\n\nsys<｜User｜>q1<｜Assistant｜></think>a1<｜end▁of▁sentence｜><｜System｜>mid sys<｜Assistant｜><think>"
+ },
+ {
+  "name": "mid_system_chat",
+  "messages": [
+   {
+    "role": "system",
+    "content": "sys"
+   },
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1"
+   },
+   {
+    "role": "system",
+    "content": "mid sys"
+   },
+   {
+    "role": "assistant",
+    "content": "a2"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>sys<｜User｜>q1<｜Assistant｜></think>a1<｜end▁of▁sentence｜><｜System｜>mid sys<｜Assistant｜></think>a2<｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "mid_system_then_user",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1",
+    "reasoning_content": "r1"
+   },
+   {
+    "role": "system",
+    "content": "mid"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q1<｜Assistant｜></think>a1<｜end▁of▁sentence｜><｜System｜>mid<｜User｜>q2<｜Assistant｜><think>"
+ },
+ {
+  "name": "tool_call_thinking",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   },
+   {
+    "role": "assistant",
+    "content": "summary",
+    "reasoning_content": "  reason  ",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\",\"limit\":2}"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>question<｜Assistant｜><think>  reason  </think>summary\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"limit\" string=\"false\">2</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "tool_call_chat",
+  "messages": [
+   {
+    "role": "user",
+    "content": "question"
+   },
+   {
+    "role": "assistant",
+    "content": "summary",
+    "reasoning_content": "  reason  ",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\",\"limit\":2}"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>question<｜Assistant｜></think>summary\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"limit\" string=\"false\">2</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "ns_schema_tool_str",
+  "messages": [
+   {
+    "role": "system",
+    "content": "system",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      },
+      "namespace": "search"
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>system\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"search::lookup\", \"description\": \"Look up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>q<｜Assistant｜></think>"
+ },
+ {
+  "name": "ns_schema_tool_dict",
+  "messages": [
+   {
+    "role": "system",
+    "content": "system",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      },
+      "namespace": {
+       "name": "search",
+       "description": "Search tools."
+      }
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>system\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"search::lookup\", \"description\": \"Search tools.\\nLook up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>q<｜Assistant｜></think>"
+ },
+ {
+  "name": "ns_call_tool",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "summary",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\",\"limit\":2}"
+      },
+      "namespace": "search"
+     }
+    ]
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜><think></think>summary\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"search::lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"limit\" string=\"false\">2</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "ns_schema_function_str",
+  "messages": [
+   {
+    "role": "system",
+    "content": "system",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       },
+       "namespace": "search"
+      }
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>system\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"search::lookup\", \"description\": \"Look up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>q<｜Assistant｜></think>"
+ },
+ {
+  "name": "ns_schema_function_dict",
+  "messages": [
+   {
+    "role": "system",
+    "content": "system",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       },
+       "namespace": {
+        "name": "search",
+        "description": "Search tools."
+       }
+      }
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>system\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"search::lookup\", \"description\": \"Search tools.\\nLook up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>q<｜Assistant｜></think>"
+ },
+ {
+  "name": "ns_call_function",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "summary",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\",\"limit\":2}",
+       "namespace": "search"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜><think></think>summary\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"search::lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"limit\" string=\"false\">2</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "ns_call_qualified",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "s",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "search::lookup",
+       "arguments": "{\"query\":\"value\",\"limit\":2}"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>s\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"search::lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"limit\" string=\"false\">2</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "ns_schema_qualified_dict",
+  "messages": [
+   {
+    "role": "system",
+    "content": "system",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "search::lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      },
+      "namespace": {
+       "name": "search",
+       "description": "Search tools."
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>system\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"search::lookup\", \"description\": \"Search tools.\\nLook up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n"
+ },
+ {
+  "name": "ns_conflict",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "s",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "search::lookup",
+       "arguments": "{\"query\":\"value\",\"limit\":2}"
+      },
+      "namespace": "files"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "AssertionError: Conflicting tool namespaces: files != search"
+ },
+ {
+  "name": "ns_nested",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "s",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "a::b::c",
+       "arguments": "{\"query\":\"value\",\"limit\":2}"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "AssertionError: Tool name must not contain '::': b::c"
+ },
+ {
+  "name": "ns_bad_namespace",
+  "messages": [
+   {
+    "role": "system",
+    "content": "x",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      },
+      "namespace": "a::b"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "AssertionError: Tool namespace must not contain '::': a::b"
+ },
+ {
+  "name": "same_name_namespaces",
+  "messages": [
+   {
+    "role": "system",
+    "content": "system",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      }
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      },
+      "namespace": {
+       "name": "search"
+      }
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      },
+      "namespace": {
+       "name": "files"
+      }
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "summary",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\"}"
+      }
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\"}"
+      },
+      "namespace": "search"
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{\"query\":\"value\"}"
+      },
+      "namespace": "files"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>system\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"lookup\", \"description\": \"Look up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n{\"name\": \"search::lookup\", \"description\": \"Look up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n{\"name\": \"files::lookup\", \"description\": \"Look up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>q<｜Assistant｜></think>summary\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"search::lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"files::lookup\">\n<｜DSML｜ parameter name=\"query\" string=\"true\">value</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "args_double_encoded",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "\"{\\\"a\\\": 1, \\\"b\\\": \\\"x\\\"}\""
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"a\" string=\"false\">1</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"b\" string=\"true\">x</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "args_dict",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": {
+        "a": [
+         1,
+         2
+        ],
+        "b": "x",
+        "c": null
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"a\" string=\"false\">[1, 2]</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"b\" string=\"true\">x</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"c\" string=\"false\">null</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "args_not_json",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "hello"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"arguments\" string=\"true\">hello</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "args_list_json",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "[1, 2]"
+      }
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n<｜DSML｜ parameter name=\"arguments\" string=\"true\">[1, 2]</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "drop_thinking_tool_turn",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1",
+    "reasoning_content": "r1"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "r2",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{}"
+      },
+      "id": "c1"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "value"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q1<｜Assistant｜></think>a1<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜><think>r2</think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>value</tool_result><｜Assistant｜><think>"
+ },
+ {
+  "name": "drop_thinking_next_turn",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1",
+    "reasoning_content": "r1"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "r2",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{}"
+      },
+      "id": "c1"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "value"
+   },
+   {
+    "role": "user",
+    "content": "q3"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q1<｜Assistant｜></think>a1<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>value</tool_result>\n\nq3<｜Assistant｜><think>"
+ },
+ {
+  "name": "drop_thinking_chat",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1",
+    "reasoning_content": "r1"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "r2",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{}"
+      },
+      "id": "c1"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "value"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q1<｜Assistant｜></think>a1<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>value</tool_result><｜Assistant｜></think>"
+ },
+ {
+  "name": "tools_keep_thinking",
+  "messages": [
+   {
+    "role": "system",
+    "content": "s",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "description": "Look up a value",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "query": {
+          "type": "string"
+         },
+         "limit": {
+          "type": "integer"
+         }
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q1"
+   },
+   {
+    "role": "assistant",
+    "content": "a1",
+    "reasoning_content": "r1"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "r2",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{}"
+      },
+      "id": "c1"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "value"
+   },
+   {
+    "role": "user",
+    "content": "q3"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\ns\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"name\": \"lookup\", \"description\": \"Look up a value\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"limit\": {\"type\": \"integer\"}}}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>q1<｜Assistant｜><think>r1</think>a1<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜><think>r2</think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>value</tool_result>\n\nq3<｜Assistant｜><think>"
+ },
+ {
+  "name": "tool_results_sorted",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "a",
+       "arguments": "{}"
+      },
+      "id": "a"
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "b",
+       "arguments": "{}"
+      },
+      "id": "b"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "b",
+    "content": "rb"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "a",
+    "content": "ra"
+   },
+   {
+    "role": "user",
+    "content": "then"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"a\">\n\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"b\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>ra</tool_result>\n\n<tool_result>rb</tool_result>\n\nthen<｜Assistant｜><think>"
+ },
+ {
+  "name": "tool_content_blocks",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{}"
+      },
+      "id": "x"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "x",
+    "content_blocks": [
+     {
+      "type": "text",
+      "text": "t1"
+     },
+     {
+      "type": "foo"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>t1\n\n[Unsupported foo]</tool_result><｜Assistant｜></think>"
+ },
+ {
+  "name": "tool_content_list",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup",
+       "arguments": "{}"
+      },
+      "id": "x"
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "x",
+    "content": [
+     {
+      "type": "text",
+      "text": "t1"
+     },
+     {
+      "type": "text",
+      "text": "t2"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>t1\n\nt2</tool_result><｜Assistant｜></think>"
+ },
+ {
+  "name": "user_list_content",
+  "messages": [
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "a"
+     },
+     {
+      "type": "text",
+      "text": "b"
+     },
+     {
+      "type": "input_audio"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>a\n\nb\n\n[Unsupported input_audio]<｜Assistant｜></think>"
+ },
+ {
+  "name": "user_empty_list",
+  "messages": [
+   {
+    "role": "user",
+    "content": []
+   },
+   {
+    "role": "assistant",
+    "content": "x"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜><｜Assistant｜></think>x<｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "system_list_content",
+  "messages": [
+   {
+    "role": "system",
+    "content": [
+     {
+      "type": "text",
+      "text": "s1"
+     },
+     {
+      "type": "text",
+      "text": "s2"
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>s1\n\ns2<｜User｜>q<｜Assistant｜></think>"
+ },
+ {
+  "name": "consecutive_users",
+  "messages": [
+   {
+    "role": "user",
+    "content": "a"
+   },
+   {
+    "role": "user",
+    "content": "b"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>a\n\nb<｜Assistant｜><think>"
+ },
+ {
+  "name": "user_content_blocks_given",
+  "messages": [
+   {
+    "role": "user",
+    "content": "ignored",
+    "content_blocks": [
+     {
+      "type": "text",
+      "text": "cb"
+     }
+    ]
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>cb<｜Assistant｜></think>"
+ },
+ {
+  "name": "response_format",
+  "messages": [
+   {
+    "role": "system",
+    "content": "sys",
+    "response_format": {
+     "type": "json_object"
+    }
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": true,
+  "effort": 30,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 30 (range 1-100, the higher the value, the more thorough the reasoning)\n\nsys\n\n## Response Format:\n\nYou MUST strictly adhere to the following schema to reply:\n{\"type\": \"json_object\"}<｜User｜>q<｜Assistant｜><think>"
+ },
+ {
+  "name": "wo_eos",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "partial",
+    "reasoning_content": "r",
+    "wo_eos": true
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜><think>r</think>partial"
+ },
+ {
+  "name": "latest_reminder_after_user",
+  "messages": [
+   {
+    "role": "system",
+    "content": "s"
+   },
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "latest_reminder",
+    "content": "date"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\ns<｜User｜>q<｜Assistant｜><think><｜latest_reminder｜>date"
+ },
+ {
+  "name": "task_query",
+  "messages": [
+   {
+    "role": "user",
+    "content": "classify me",
+    "task": "query"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>classify me<｜query｜>"
+ },
+ {
+  "name": "task_action_thinking",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q",
+    "task": "action"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜><think><｜action｜>"
+ },
+ {
+  "name": "task_action_then_answer",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q",
+    "task": "action"
+   },
+   {
+    "role": "assistant",
+    "content": "Search",
+    "reasoning_content": "r"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜><think><｜action｜>Search<｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "task_title",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "a",
+    "task": "title"
+   },
+   {
+    "role": "assistant",
+    "content": "Title"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜Assistant｜></think>a<｜end▁of▁sentence｜><｜title｜>Title<｜end▁of▁sentence｜>"
+ },
+ {
+  "name": "task_invalid",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q",
+    "task": "nope"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "AssertionError: Invalid task: 'nope'. Valid tasks are: ['action', 'authority', 'read_url', 'title', 'domain', 'query']"
+ },
+ {
+  "name": "task_blocks_merge",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q",
+    "task": "query"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜User｜>q<｜User｜>q2<｜Assistant｜></think>"
+ },
+ {
+  "name": "developer_role",
+  "messages": [
+   {
+    "role": "developer",
+    "content": "d"
+   },
+   {
+    "role": "user",
+    "content": "q"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "NotImplementedError: Unknown role: developer"
+ },
+ {
+  "name": "developer_dropped",
+  "messages": [
+   {
+    "role": "developer",
+    "content": "d"
+   },
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "a"
+   },
+   {
+    "role": "user",
+    "content": "q2"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>q<｜Assistant｜></think>a<｜end▁of▁sentence｜><｜User｜>q2<｜Assistant｜><think>"
+ },
+ {
+  "name": "unknown_role",
+  "messages": [
+   {
+    "role": "bot",
+    "content": "d"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "NotImplementedError: Unknown role: bot"
+ },
+ {
+  "name": "placeholder_content",
+  "messages": [
+   {
+    "role": "user",
+    "content": "hi <｜deepseek_image｜>"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "ValueError: Message content contains image special token '<｜deepseek_image｜>'. Images should be provided as image content blocks."
+ },
+ {
+  "name": "placeholder_tool",
+  "messages": [
+   {
+    "role": "tool",
+    "content": "hi <｜deepseek_image｜>"
+   }
+  ],
+  "thinking": false,
+  "effort": null,
+  "error": "ValueError: Message content contains image special token '<｜deepseek_image｜>'. Images should be provided as image content blocks."
+ },
+ {
+  "name": "tool_only_first",
+  "messages": [
+   {
+    "role": "tool",
+    "tool_call_id": "z",
+    "content": "r"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜><tool_result>r</tool_result><｜Assistant｜><think>"
+ },
+ {
+  "name": "system_only",
+  "messages": [
+   {
+    "role": "system",
+    "content": "only"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\nonly"
+ },
+ {
+  "name": "assistant_only_thinking",
+  "messages": [
+   {
+    "role": "assistant",
+    "content": "a",
+    "reasoning_content": "r"
+   }
+  ],
+  "thinking": true,
+  "effort": null,
+  "expected": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\nr</think>a<｜end▁of▁sentence｜>"
+ }
+]
