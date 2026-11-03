@@ -215,7 +215,7 @@ pub fn write_ggml_tensor(w: &mut ModelWriter, name: &str, t: &GgufTensor, data: 
                 bytes.extend(lapid_quant::from_ggml_blocks(f, m, rows, cols));
             }
             let dt = Target::Quant(f).dtype();
-            return w.add_raw(name, dt, &shape, &bytes);
+            return w.add_owned(name, dt, &shape, bytes);
         }
         match (t.ggml_type, target) {
             (GgmlType::F16, Target::F16) => w.add_raw(name, DType::F16, &shape, data),

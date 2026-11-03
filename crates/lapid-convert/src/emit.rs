@@ -74,7 +74,7 @@ impl ConvertSpec {
             return w.add_raw(name, DType::F16, shape, data);
         }
         let v = crate::ggml::dequantize(t.ggml_type, data, shape.iter().product())?;
-        w.add_raw(name, DType::F32, shape, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
+        w.add_owned(name, DType::F32, shape, v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
     }
 
     /// Source tensor `name` written as `out`.
@@ -86,7 +86,7 @@ impl ConvertSpec {
             if shape.last() != raw.last() || shape.iter().product::<usize>() != raw.iter().product::<usize>() {
                 bail!("shape_mismatch", "{name}: FP4 {raw:?} cannot be reshaped to {shape:?} (rows only)");
             }
-            return w.add_raw(out, DType::Mxfp4, &shape, &mxfp4_stored(&blocks, &shape)?);
+            return w.add_owned(out, DType::Mxfp4, &shape, mxfp4_stored(&blocks, &shape)?);
         }
         match src {
             Src::Gguf(i) => {
@@ -142,7 +142,7 @@ impl ConvertSpec {
             if let Some(e) = errors.into_inner().unwrap_or_else(|e| e.into_inner()).into_iter().next() {
                 return Err(e);
             }
-            return w.add_raw(out, DType::Mxfp4, &shape, &bytes);
+            return w.add_owned(out, DType::Mxfp4, &shape, bytes);
         }
         // GGUF parts of one ggml type: concatenated blocks, written as one ggml tensor.
         let ggml: Option<Vec<(&GgufFile, &GgufTensor)>> =
@@ -174,6 +174,6 @@ impl ConvertSpec {
             let (_, b) = encode(target, &v, &inner)?;
             bytes.extend(b);
         }
-        w.add_raw(out, target.dtype(), &shape, &bytes)
+        w.add_owned(out, target.dtype(), &shape, bytes)
     }
 }

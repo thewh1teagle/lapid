@@ -365,3 +365,7 @@ pub fn sibling_mmproj(model: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_tests.rs"]
+mod bench_tests;

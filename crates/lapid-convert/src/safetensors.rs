@@ -146,7 +146,11 @@ impl SafeTensors {
     /// e.g. into a blob).
     pub fn shared(&self, name: &str) -> Result<(lapid_format::Bytes, Range<usize>)> {
         let e = self.entry(name)?;
-        Ok((self.mmap.clone(), self.data_start + e.begin..self.data_start + e.end))
+        let r = self.data_start + e.begin..self.data_start + e.end;
+        // read once front to back (a hint: errors are irrelevant)
+        #[cfg(unix)]
+        let _ = self.mmap.advise_range(memmap2::Advice::Sequential, r.start, r.len());
+        Ok((self.mmap.clone(), r))
     }
 
     /// Tensor converted to f32: floats (F32, F16, BF16, F64, F8_E4M3; F8_E8M0 as the power of
