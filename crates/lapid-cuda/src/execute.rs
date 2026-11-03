@@ -226,6 +226,13 @@ impl Exec {
         self.staging(ctx)?.upload(ctx.drv, stream, dst.ptr(), bytes)
     }
 
+    /// Copy `bytes` to `dst` at byte `offset` (in range: checked by the caller).
+    pub fn write(&mut self, ctx: &Ctx, dst: &CudaBuffer, offset: usize, bytes: &[u8]) -> Result<()> {
+        ctx.bind()?;
+        let stream = self.stream;
+        self.staging(ctx)?.upload(ctx.drv, stream, dst.ptr() + offset as u64, bytes)
+    }
+
     pub fn download(&mut self, ctx: &Ctx, src: &CudaBuffer, out: &mut [u8]) -> Result<()> {
         ctx.bind()?;
         let stream = self.stream;

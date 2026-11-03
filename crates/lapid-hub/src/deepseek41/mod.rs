@@ -82,9 +82,48 @@ mod tests {
         let args = crate::cmd::ModelArgs { model: Some(out.display().to_string()), dtype: Some("fp32".into()), device: Some("cpu".into()) };
         let report = (ENTRY.verify)(Some(&root), &args).expect("verify");
         let chunked = chunked_prefill_matches(&root, &out);
+        let cached = cached_experts_match(&root, &out);
         let _ = std::fs::remove_file(&out);
         chunked.expect("chunked prefill");
+        cached.expect("cached experts");
         assert_eq!(report["ok"], serde_json::json!(true), "{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+    }
+
+    /// Prefill + greedy decode with the routed experts in a 2-slot device cache (misses,
+    /// evictions, multi-pass prefill) give the logits of the experts as graph leaves, with
+    /// the stored (mxfp4) experts, on the CPU and on CUDA when present.
+    fn cached_experts_match(root: &Path, file: &Path) -> lapid::Result<()> {
+        use lapid_nn::llm::expert_cache::set_forced_slots;
+        let result: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("result.json"))?)?;
+        let ids: Vec<u32> = serde_json::from_value(result["cases"]["long"]["prompt_tokens"].clone())?;
+        let run = |dev: &lapid::Device, slots: Option<usize>| -> lapid::Result<(Vec<Vec<f32>>, Option<lapid_nn::llm::expert_cache::CacheStats>)> {
+            set_forced_slots(slots);
+            let llm = Deepseek41::load_with(file, dev, lapid_nn::Precision::Stored);
+            set_forced_slots(None);
+            let llm = llm?;
+            assert_eq!(llm.model().expert_cache().is_some(), slots.is_some());
+            let mut s = llm.new_session();
+            let mut out = vec![llm.step(&mut s, &ids[..ids.len().min(150)])?];
+            for _ in 0..4 {
+                let next = lapid_nn::argmax(out.last().map(Vec::as_slice).unwrap_or_default()) as u32;
+                out.push(llm.step(&mut s, &[next])?);
+            }
+            Ok((out, llm.model().expert_cache().map(|c| c.stats())))
+        };
+        let mut devices = vec![lapid::Device::cpu()];
+        devices.extend(lapid::Device::cuda(0).ok());
+        for dev in &devices {
+            let (want, _) = run(dev, None)?;
+            let (got, stats) = run(dev, Some(2))?;
+            let stats = stats.expect("stats");
+            assert!(stats.extra_passes > 0 && stats.misses > 2, "{stats:?}");
+            for (step, (a, b)) in got.iter().zip(&want).enumerate() {
+                let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1.0);
+                let diff = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+                assert!(diff < 1e-3 * scale, "{}: step {step}: cached experts differ by {diff}", dev.name());
+            }
+        }
+        Ok(())
     }
 
     /// The long prompt fed in uneven chunks (open compressor groups, selections and Engram

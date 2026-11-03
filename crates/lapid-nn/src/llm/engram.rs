@@ -160,6 +160,16 @@ impl Fp8Rows {
         self.dim
     }
 
+    /// Start reading rows `ids` into the page cache (asynchronous), ahead of [`gather`](Self::gather).
+    pub fn prefetch(&self, ids: &[u64]) {
+        let d = self.dim;
+        for &id in ids {
+            let Some(r) = usize::try_from(id).ok().filter(|&r| r < self.rows) else { continue };
+            let _ = lapid::residency::advise_host(&self.values, Some(r * d..(r + 1) * d), lapid::Advice::WillNeed);
+            let _ = lapid::residency::advise_host(&self.scales, Some(r * d / 32..(r + 1) * d / 32), lapid::Advice::WillNeed);
+        }
+    }
+
     /// Append the dequantized rows `ids` (`dim` values each) to `out`.
     pub fn gather(&self, ids: &[u64], out: &mut Vec<f32>) -> Result<()> {
         let (v, s, d) = (self.values.bytes(), self.scales.bytes(), self.dim);

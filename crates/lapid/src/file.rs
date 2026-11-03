@@ -48,6 +48,8 @@ struct Image {
     data: WeakImage,
     /// `Auto` chose to stream this file (decided at open).
     streams: bool,
+    /// Per-file policy ([`LapidFile::set_residency`]); wins over the process-wide one.
+    forced: Option<Residency>,
 }
 
 static FILE_RANGES: Mutex<Vec<Image>> = Mutex::new(Vec::new());
@@ -63,7 +65,7 @@ fn register_image(data: &Bytes, weights: u64, mapped: bool) -> bool {
         let resident: u64 = ranges.iter().filter(|i| !i.streams).map(|i| (i.end - i.start) as u64).sum();
         residency::auto_streams(weights, resident)
     };
-    ranges.push(Image { start, end: start + bytes.len(), data: Arc::downgrade(data), streams });
+    ranges.push(Image { start, end: start + bytes.len(), data: Arc::downgrade(data), streams, forced: None });
     streams
 }
 
@@ -71,15 +73,20 @@ fn register_image(data: &Bytes, weights: u64, mapped: bool) -> bool {
 /// a live .lapid image; `None` for other host data.
 pub(crate) fn weight_residency(key: (usize, usize)) -> Option<Residency> {
     let (ptr, len) = key;
-    let streams = lock(&FILE_RANGES)
+    let (streams, forced) = lock(&FILE_RANGES)
         .iter()
         .find(|i| ptr >= i.start && ptr.saturating_add(len) <= i.end && i.data.strong_count() > 0)
-        .map(|i| i.streams)?;
-    Some(match residency::residency() {
+        .map(|i| (i.streams, i.forced))?;
+    Some(effective(forced, streams))
+}
+
+/// `Upload` or `Mmap` for a file with this override and `Auto` decision.
+fn effective(forced: Option<Residency>, streams: bool) -> Residency {
+    match forced.unwrap_or_else(residency::residency) {
         Residency::Auto if streams => Residency::Mmap,
         Residency::Auto => Residency::Upload,
         r => r,
-    })
+    }
 }
 
 impl LapidFile {
@@ -152,11 +159,26 @@ impl LapidFile {
     /// Where this file's weights live at eval under the current policy: `Upload` (copied to
     /// the device once) or `Mmap` (read in place from the file mapping).
     pub fn residency(&self) -> Residency {
-        match residency::residency() {
-            Residency::Auto if self.streams => Residency::Mmap,
-            Residency::Auto => Residency::Upload,
-            r => r,
-        }
+        effective(self.forced(), self.streams)
+    }
+
+    /// The image registry entry of this file.
+    fn with_image<T>(&self, f: impl FnOnce(&mut Image) -> T) -> Option<T> {
+        let start = (*self.image).as_ref().as_ptr() as usize;
+        lock(&FILE_RANGES).iter_mut().find(|i| i.start == start && i.data.strong_count() > 0).map(f)
+    }
+
+    fn forced(&self) -> Option<Residency> {
+        self.with_image(|i| i.forced).flatten()
+    }
+
+    /// Residency of this file's weights regardless of the process-wide policy (`Auto`
+    /// returns to it), for models that manage part of their weights themselves: e.g. a
+    /// model whose MoE experts stream through its own device cache keeps the dense
+    /// weights uploaded (`Upload`) although the file is far larger than memory. Applies
+    /// to weights first used after the call (call it before loading).
+    pub fn set_residency(&self, r: Residency) {
+        self.with_image(|i| i.forced = (r != Residency::Auto).then_some(r));
     }
 
     /// Page-cache hint for the whole file image (e.g. `Advice::Random` for weights read

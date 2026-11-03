@@ -196,6 +196,22 @@ impl Backend for CudaBackend {
         Ok(CudaBuffer::map(&self.ctx, host).map(|b| Arc::new(b) as DeviceData))
     }
 
+    fn write(&self, buf: &DeviceData, offset: usize, bytes: &[u8]) -> Result<()> {
+        let b = as_cuda(buf, &self.ctx)?;
+        if b.is_mapped() {
+            return Err(Error::new("invalid_argument", "write into a read-only mapped buffer"));
+        }
+        if offset.checked_add(bytes.len()).is_none_or(|end| end > b.len_bytes()) {
+            return Err(Error::new("invalid_argument", format!("write of {} bytes at {offset} outside a {}-byte buffer", bytes.len(), b.len_bytes())));
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        // The host copies `bytes` into pinned staging memory and the copy engine moves
+        // them: the device never reads (possibly file-backed) pageable memory in place.
+        self.lock()?.write(&self.ctx, b, offset, bytes)
+    }
+
     fn download(&self, buf: &DeviceData) -> Result<Vec<u8>> {
         let b = as_cuda(buf, &self.ctx)?;
         if let Some(bytes) = b.mapped_bytes() {

@@ -53,6 +53,23 @@ pub(crate) struct Shared {
     pub candidates: Option<Tensor>,
 }
 
+impl Shared {
+    /// Every tensor held (to realize them between evaluations).
+    pub fn tensors_mut(&mut self) -> Vec<&mut Tensor> {
+        let mut v = Vec::new();
+        if let Some(c) = &mut self.comp {
+            v.extend([&mut c.rows, &mut c.keys]);
+        }
+        match &mut self.selection {
+            Some(Selection::Mask(m)) => v.push(m),
+            Some(Selection::Gather { idx, mask }) => v.extend([idx, mask]),
+            Some(Selection::Visible) | None => {}
+        }
+        v.extend(self.candidates.as_mut());
+        v
+    }
+}
+
 pub(crate) struct Attention {
     pub wq_a: Linear,
     pub q_norm: RmsNorm,

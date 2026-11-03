@@ -15,7 +15,7 @@ mod runtime;
 
 pub use device::{Device, DeviceInfo};
 pub use file::LapidFile;
-pub use log::{LogHook, set_log_hook};
+pub use log::{LogHook, emit as log_line, set_log_hook};
 pub use residency::{Advice, Residency, advise, populate, populate_all, prefetch, residency, set_read_ranges, set_residency};
 pub use lapid_tensor::{
     BinaryOp, DType, DeviceBuffer, DeviceData, Error, HostData, Op, ReduceOp, Result, Tensor,

@@ -12,6 +12,8 @@
 //!   sin tables, `rotate_half`, M-RoPE (Qwen-VL) and the interleaved tail RoPE (DeepSeek V4).
 //! * [`engram`]: n-gram hashed lookup tables gated into the hyper-connection streams
 //!   (DeepSeek V4.1): host hashing, host FP8 row gather, the gate.
+//! * [`expert_cache`]: a device pool of MoE experts filled from the mmap'd file on demand,
+//!   for models whose experts do not fit in memory.
 //! * [`head`]: token embedding + logits projection (`lm_head` or the tied embedding).
 //!
 //! Tensor names in the `load` functions are the ones the block is defined by (HF Qwen /
@@ -19,6 +21,7 @@
 
 pub mod delta_net;
 pub mod engram;
+pub mod expert_cache;
 pub mod gated_attention;
 pub mod head;
 pub mod hyper;
