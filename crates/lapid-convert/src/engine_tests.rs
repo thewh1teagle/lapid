@@ -138,3 +138,112 @@ fn gguf_stack_keeps_blocks() {
     }
     std::fs::remove_dir_all(&d).ok();
 }
+
+struct MicroHooks;
+impl ConvertHooks for MicroHooks {
+    fn expected(&self, _cfg: &Value) -> Result<Vec<String>> {
+        Ok(["wq.weight", "x.weight", "ffn.experts.w1", "eng.fp8", "eng.e8m0"].map(String::from).to_vec())
+    }
+    fn hf_unpaired(&self, n: &str) -> bool {
+        n.starts_with("eng.")
+    }
+    fn transform(&self, name: &str, src: &dyn TensorSource, _cfg: &Value) -> Result<Emit> {
+        let blob = |n: &str| Emit::Blob { name: n.into(), media_type: "application/octet-stream" };
+        Ok(match name {
+            "eng.embed.weight" => blob("eng.fp8"),
+            "eng.embed.scale" => blob("eng.e8m0"),
+            "ffn.experts.0.w1.weight" => {
+                assert_eq!(src.stored_dtype(name).as_deref(), Some("F4_E2M1+E8M0"));
+                assert_eq!(src.shape(name), Some(vec![4, 64]));
+                Emit::Stack { name: "ffn.experts.w1".into(), parts: vec![name.into(), "ffn.experts.1.w1.weight".into()] }
+            }
+            "ffn.experts.1.w1.weight" => Emit::Drop,
+            "wq.weight" => {
+                assert_eq!(src.stored_dtype(name).as_deref(), Some("F8_E4M3+E8M0"));
+                Emit::Keep
+            }
+            _ => Emit::Keep,
+        })
+    }
+}
+
+static MICRO: ConvertSpec = ConvertSpec {
+    architecture: "toy",
+    license: "mit",
+    hf_model_types: &["toy"],
+    gguf_architectures: &[],
+    hf_names: &[],
+    gguf_names: &[],
+    roles: &[RoleRule::new("ffn.experts.*", Role::Linear)],
+    text_assets: false,
+    hooks: &MicroHooks,
+};
+
+#[test]
+fn hf_fp8_fp4_scales() {
+    let d = scratch("hf-micro");
+    std::fs::write(d.join("config.json"), r#"{"model_type": "toy"}"#).expect("cfg");
+    // FP8 [64, 64], 32x32 blocks.
+    let wq: Vec<u8> = (0..64 * 64).map(|i| ((i * 13) % 0x7e) as u8 | if i % 3 == 0 { 0x80 } else { 0 }).collect();
+    let wq_s = vec![127u8, 130, 120, 128];
+    // FP4 [4, 64]: packed [4, 32], scales [4, 2].
+    let fp4 = |k: usize| -> (Vec<u8>, Vec<u8>) { ((0..128).map(|i| (i * 29 + k * 7) as u8).collect(), (0..8).map(|i| 118 + (i + k) as u8 % 10).collect()) };
+    let (x, xs) = fp4(0);
+    let (e0, e0s) = fp4(1);
+    let (e1, e1s) = fp4(2);
+    let eng: Vec<u8> = (0..10 * 64).map(|i| (i % 251) as u8).collect();
+    let eng_s: Vec<u8> = (0..20).map(|i| 100 + i as u8).collect();
+    write_safetensors(&d.join("model-1.safetensors"), &[
+        ("wq.weight", "F8_E4M3", vec![64, 64], wq.clone()),
+        ("x.weight", "I8", vec![4, 32], x.clone()),
+        ("eng.embed.weight", "F8_E4M3", vec![10, 64], eng.clone()),
+        ("ffn.experts.0.w1.weight", "I8", vec![4, 32], e0.clone()),
+        ("ffn.experts.1.w1.scale", "F8_E8M0", vec![4, 2], e1s.clone()),
+    ]);
+    write_safetensors(&d.join("model-2.safetensors"), &[
+        ("wq.scale", "F8_E8M0", vec![2, 2], wq_s.clone()),
+        ("x.scale", "F8_E8M0", vec![4, 2], xs.clone()),
+        ("eng.embed.scale", "F8_E8M0", vec![10, 2], eng_s.clone()),
+        ("ffn.experts.0.w1.scale", "F8_E8M0", vec![4, 2], e0s.clone()),
+        ("ffn.experts.1.w1.weight", "I8", vec![4, 32], e1.clone()),
+    ]);
+    std::fs::write(
+        d.join("model.safetensors.index.json"),
+        serde_json::to_vec(&json!({"weight_map": {"a": "model-1.safetensors", "b": "model-2.safetensors"}})).expect("json"),
+    )
+    .expect("index");
+    let mx = |p: &[u8], s: &[u8]| {
+        let mut b = lapid_quant::mxfp4::from_e2m1_pairs(p, s, 4, 64);
+        b.resize(lapid_quant::layout(lapid_quant::Format::Mxfp4, 4, 64).total, 0);
+        b
+    };
+    let want_wq = crate::microscale::fp8_to_f32(&wq, &wq_s, [64, 64], [2, 2]).expect("fp8");
+    for dtype in [OutDType::F32, OutDType::Int8] {
+        let out = d.join(format!("out-{}.lapid", dtype.name()));
+        MICRO.convert_hf(d.to_str().expect("utf8"), dtype, &out).expect("convert");
+        let r = lapid_format::Reader::open(&out).expect("open");
+        r.verify_tensors().expect("hashes");
+        let names: Vec<&str> = r.tensors.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.iter().any(|n| n.ends_with(".scale") || n.starts_with("eng.")), "{names:?}");
+        // FP8 -> exact f32 (fp32 output) / int8 by the policy.
+        let t = r.tensor("wq.weight").expect("wq");
+        if dtype == OutDType::F32 {
+            assert_eq!(t.dtype, lapid_tensor::DType::F32);
+            let got: Vec<f32> = r.tensor_bytes(t).chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            assert_eq!(got, want_wq);
+        } else {
+            assert_eq!(t.dtype, lapid_tensor::DType::Int8);
+        }
+        // FP4 -> MXFP4 whatever the output dtype.
+        let t = r.tensor("x.weight").expect("x");
+        assert_eq!((t.dtype, t.shape.clone()), (lapid_tensor::DType::Mxfp4, vec![4, 64]));
+        assert_eq!(r.tensor_bytes(t), &mx(&x, &xs)[..]);
+        let t = r.tensor("ffn.experts.w1").expect("stack");
+        assert_eq!((t.dtype, t.shape.clone()), (lapid_tensor::DType::Mxfp4, vec![2, 4, 64]));
+        assert_eq!(r.tensor_bytes(t), &[mx(&e0, &e0s), mx(&e1, &e1s)].concat()[..]);
+        // Unpaired engram tables as raw blobs.
+        assert_eq!(r.blob("eng.fp8"), Some(&eng[..]));
+        assert_eq!(r.blob("eng.e8m0"), Some(&eng_s[..]));
+    }
+    std::fs::remove_dir_all(&d).ok();
+}

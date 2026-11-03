@@ -13,6 +13,7 @@ use lapid_tensor::{Result, bail};
 
 pub mod assets;
 pub mod calibrate;
+mod emit;
 pub mod engine;
 pub mod ggml;
 pub mod ggml_legacy;
@@ -20,8 +21,11 @@ mod gptq;
 pub mod gguf;
 mod hf;
 pub mod mapping;
+pub mod microscale;
+pub mod parallel;
 pub mod policy;
 pub mod safetensors;
+mod source;
 pub mod transforms;
 pub mod writer;
 

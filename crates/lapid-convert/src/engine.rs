@@ -26,17 +26,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lapid_tensor::{Error, Result, bail};
+use lapid_tensor::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::OutDType;
 use crate::assets::{HfFiles, TextAssets};
-use crate::ggml::GgmlType;
-use crate::gguf::{GgufFile, GgufTensor, GgufValue, is_gguf, write_ggml_tensor};
+use crate::gguf::{GgufFile, GgufValue, is_gguf};
 use crate::mapping::{Renamed, RoleRule, Rule, rename, role_of};
-use crate::policy::{Role, Target};
+use crate::policy::Role;
 use crate::safetensors::SafeTensors;
-use crate::transforms::gather_rows;
+use crate::source::{Sources, Src, hf_map};
 use crate::writer::{ModelWriter, RoleArc, file_hash, metadata, read_json};
 
 /// Where a tensor comes from.
@@ -79,6 +78,11 @@ pub trait TensorSource {
     fn shape(&self, name: &str) -> Option<Vec<usize>>;
     /// Values (dequantized) in the [`shape`](Self::shape) layout.
     fn f32(&self, name: &str) -> Result<Vec<f32>>;
+    /// Stored form: the safetensors dtype (`"BF16"`, ...), `"F8_E4M3+E8M0"` / `"F4_E2M1+E8M0"`
+    /// for block-scaled weights paired with their scales, the ggml type name for GGUF.
+    fn stored_dtype(&self, _name: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Inputs of an HF checkpoint beyond `config.json` and the weights (see
@@ -136,8 +140,15 @@ pub trait ConvertHooks: Sync {
         Ok(())
     }
 
-    /// Every tensor (our names) the output must contain.
+    /// Every tensor (our names) the output must contain (blob names may be listed too).
     fn expected(&self, cfg: &Value) -> Result<Vec<String>>;
+
+    /// Whether the HF weight `hf_name` (source name, before `hf_names`) that has an
+    /// `F8_E8M0` `.scale` companion stays unpaired: both are then plain source tensors (e.g.
+    /// to store them unchanged with [`Emit::Blob`]). Default: paired (see `microscale`).
+    fn hf_unpaired(&self, _hf_name: &str) -> bool {
+        false
+    }
 
     /// New shape with the same element order (e.g. `[D, K]` -> `[D, 1, K]`).
     fn reshape(&self, _name: &str, _shape: &[usize], _cfg: &Value, _src: SourceKind) -> Option<Vec<usize>> {
@@ -187,72 +198,6 @@ pub struct ConvertSpec {
     pub hooks: &'static dyn ConvertHooks,
 }
 
-enum Src {
-    Hf(usize, String),
-    Gguf(usize),
-}
-
-struct Sources<'a> {
-    kind: SourceKind,
-    shards: &'a [SafeTensors],
-    gguf: Option<&'a GgufFile>,
-    /// Companion GGUF: `Src::Gguf(i)` with `i >= gguf.tensors.len()` indexes its tensors.
-    companion: Option<&'a GgufFile>,
-    map: BTreeMap<String, Src>,
-    cfg: &'a Value,
-    hooks: &'static dyn ConvertHooks,
-}
-
-impl Sources<'_> {
-    fn raw_shape(&self, src: &Src) -> Result<Vec<usize>> {
-        match src {
-            Src::Hf(i, n) => self.shards[*i].shape(n),
-            Src::Gguf(i) => Ok(self.ggml(*i)?.1.shape.clone()),
-        }
-    }
-
-    /// File and tensor of GGUF source index `i` (model tensors, then companion tensors).
-    fn ggml(&self, i: usize) -> Result<(&GgufFile, &GgufTensor)> {
-        let g = self.gguf.ok_or_else(|| Error::new("internal", "gguf source without a file"))?;
-        if let Some(t) = g.tensors.get(i) {
-            return Ok((g, t));
-        }
-        let c = self.companion.ok_or_else(|| Error::new("internal", "gguf source index out of range"))?;
-        c.tensors.get(i - g.tensors.len()).map(|t| (c, t)).ok_or_else(|| Error::new("internal", "gguf source index out of range"))
-    }
-}
-
-impl TensorSource for Sources<'_> {
-    fn kind(&self) -> SourceKind {
-        self.kind
-    }
-
-    fn names(&self) -> Vec<String> {
-        self.map.keys().cloned().collect()
-    }
-
-    fn shape(&self, name: &str) -> Option<Vec<usize>> {
-        let s = self.raw_shape(self.map.get(name)?).ok()?;
-        Some(self.hooks.reshape(name, &s, self.cfg, self.kind).unwrap_or(s))
-    }
-
-    fn f32(&self, name: &str) -> Result<Vec<f32>> {
-        let src = self.map.get(name).ok_or_else(|| Error::new("missing_tensor", format!("no tensor {name:?}")))?;
-        let data = match src {
-            Src::Hf(i, n) => self.shards[*i].to_f32(n)?,
-            Src::Gguf(i) => {
-                let (g, t) = self.ggml(*i)?;
-                g.to_f32(t)?
-            }
-        };
-        let shape = self.raw_shape(src)?;
-        match self.hooks.row_order(name, &shape, self.cfg, self.kind) {
-            Some(order) => gather_rows(&data, &order),
-            None => Ok(data),
-        }
-    }
-}
-
 impl ConvertSpec {
     /// Dtype-policy role of one of our tensors.
     pub fn role(&self, name: &str, shape: &[usize]) -> Role {
@@ -295,21 +240,8 @@ impl ConvertSpec {
         let mut paths: Vec<(String, &Path)> = files.weights.iter().map(|p| (String::new(), p.as_path())).collect();
         paths.extend(extras.weights.iter().map(|(prefix, p)| (prefix.clone(), p.as_path())));
         let shards: Vec<SafeTensors> = paths.iter().map(|(_, p)| SafeTensors::open(p)).collect::<Result<_>>()?;
-        let mut map = BTreeMap::new();
-        for (i, st) in shards.iter().enumerate() {
-            for n in st.names() {
-                let full = format!("{}{n}", paths[i].0);
-                match rename(self.hf_names, &full) {
-                    Renamed::Drop => {}
-                    Renamed::To(o) => {
-                        map.insert(o, Src::Hf(i, n));
-                    }
-                    Renamed::NoMatch => {
-                        map.insert(full, Src::Hf(i, n));
-                    }
-                }
-            }
-        }
+        let prefixes: Vec<String> = paths.iter().map(|(p, _)| p.clone()).collect();
+        let map = hf_map(&shards, &prefixes, self.hf_names, self.hooks)?;
         let mut source = json!({ "repo": files.repo });
         if files.remote {
             source["revision"] = json!("main");
@@ -405,113 +337,6 @@ impl ConvertSpec {
             }
         }
         w.finish(&expected)
-    }
-
-    fn write_rows(&self, w: &mut ModelWriter, srcs: &Sources<'_>, name: &str, parts: &[(String, Vec<usize>, Vec<usize>)]) -> Result<()> {
-        let src = srcs.map.get(name).ok_or_else(|| Error::new("internal", format!("no source for {name:?}")))?;
-        let raw = srcs.raw_shape(src)?;
-        let n_rows = if raw.len() <= 1 { raw.first().copied().unwrap_or(1) } else { raw[..raw.len() - 1].iter().product() };
-        fn pick<T: Copy>(data: &[T], n_rows: usize, rows: &[usize], name: &str) -> Result<Vec<T>> {
-            let row = data.len() / n_rows.max(1);
-            if let Some(&r) = rows.iter().find(|&&r| r >= n_rows) {
-                bail!("shape_mismatch", "{name}: row {r} of {n_rows}");
-            }
-            Ok(rows.iter().flat_map(|&r| &data[r * row..(r + 1) * row]).copied().collect())
-        }
-        for (out, shape, rows) in parts {
-            match src {
-                Src::Gguf(i) => {
-                    let (g, gt) = srcs.ggml(*i)?;
-                    let mut t = gt.clone();
-                    t.shape = shape.clone();
-                    self.write_ggml(w, out, &t, &pick(g.tensor_data(gt), n_rows, rows, name)?, shape)?;
-                }
-                Src::Hf(i, n) => w.add_f32(out, shape, &pick(&srcs.shards[*i].to_f32(n)?, n_rows, rows, name)?)?,
-            }
-        }
-        Ok(())
-    }
-
-    /// Stored bytes of source `name` as blob `out`.
-    fn write_blob(&self, w: &mut ModelWriter, srcs: &Sources<'_>, name: &str, out: &str, media_type: &str) -> Result<()> {
-        let src = srcs.map.get(name).ok_or_else(|| Error::new("internal", format!("no source for {name:?}")))?;
-        let bytes = match src {
-            Src::Hf(i, n) => srcs.shards[*i].bytes(n)?,
-            Src::Gguf(i) => {
-                let (g, t) = srcs.ggml(*i)?;
-                g.tensor_data(t)
-            }
-        };
-        w.add_blob(out, media_type, bytes)
-    }
-
-    /// Source tensors `parts` stacked along a new first axis as `out`.
-    fn write_stack(&self, w: &mut ModelWriter, srcs: &Sources<'_>, out: &str, parts: &[String]) -> Result<()> {
-        let mut inner: Option<Vec<usize>> = None;
-        for p in parts {
-            let s = srcs.shape(p).ok_or_else(|| Error::new("missing_tensor", format!("{out}: stack part {p:?} missing")))?;
-            if inner.as_ref().is_some_and(|i| *i != s) {
-                bail!("shape_mismatch", "{out}: stack parts disagree in shape ({inner:?} vs {s:?})");
-            }
-            inner = Some(s);
-        }
-        let Some(inner) = inner else { bail!("invalid_argument", "{out}: empty stack") };
-        let shape = [vec![parts.len()], inner].concat();
-        // GGUF parts of one ggml type: concatenated blocks, written as one ggml tensor.
-        let ggml: Option<Vec<(&GgufFile, &GgufTensor)>> =
-            parts.iter().map(|p| match srcs.map.get(p) { Some(Src::Gguf(i)) => srcs.ggml(*i).ok(), _ => None }).collect();
-        if let Some(gs) = ggml
-            && gs.iter().all(|(_, t)| t.ggml_type == gs[0].1.ggml_type)
-        {
-            let mut data = Vec::new();
-            for (p, (g, t)) in parts.iter().zip(&gs) {
-                match self.hooks.row_order(p, &t.shape, srcs.cfg, srcs.kind) {
-                    Some(o) => data.extend(gather_rows(g.tensor_data(t), &o)?),
-                    None => data.extend_from_slice(g.tensor_data(t)),
-                }
-            }
-            let mut t = gs[0].1.clone();
-            t.shape = shape.clone();
-            t.nbytes = data.len() as u64;
-            return self.write_ggml(w, out, &t, &data, &shape);
-        }
-        let mut data = Vec::with_capacity(shape.iter().product());
-        for p in parts {
-            data.extend(srcs.f32(p)?);
-        }
-        w.add_f32(out, &shape, &data)
-    }
-
-    /// Raw ggml data of `t` as `name` (see [`ConvertHooks::gguf_keep_float`]).
-    fn write_ggml(&self, w: &mut ModelWriter, name: &str, t: &GgufTensor, data: &[u8], shape: &[usize]) -> Result<()> {
-        let float = matches!(t.ggml_type, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16);
-        if !(float && self.hooks.gguf_keep_float(name) && matches!(w.target(name, shape), Target::Quant(_))) {
-            return write_ggml_tensor(w, name, t, data, Some(shape));
-        }
-        if t.ggml_type == GgmlType::F16 {
-            return w.add_raw(name, lapid_tensor::DType::F16, shape, data);
-        }
-        let v = crate::ggml::dequantize(t.ggml_type, data, shape.iter().product())?;
-        w.add_raw(name, lapid_tensor::DType::F32, shape, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
-    }
-
-    /// Source tensor `name` written as `out`.
-    fn write_one(&self, w: &mut ModelWriter, srcs: &Sources<'_>, name: &str, out: &str) -> Result<()> {
-        let src = srcs.map.get(name).ok_or_else(|| Error::new("internal", format!("no source for {name:?}")))?;
-        let raw = srcs.raw_shape(src)?;
-        let shape = self.hooks.reshape(name, &raw, srcs.cfg, srcs.kind).unwrap_or_else(|| raw.clone());
-        let order = self.hooks.row_order(name, &raw, srcs.cfg, srcs.kind);
-        match src {
-            Src::Gguf(i) => {
-                let (g, t) = srcs.ggml(*i)?;
-                let data = g.tensor_data(t);
-                match order {
-                    Some(o) => write_ggml_tensor(w, out, t, &gather_rows(data, &o)?, Some(&shape)),
-                    None => self.write_ggml(w, out, t, data, &shape),
-                }
-            }
-            _ => w.add_f32(out, &shape, &srcs.f32(name)?),
-        }
     }
 }
 

@@ -6,7 +6,9 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::ops::Range;
 use std::path::Path;
+use std::sync::Arc;
 
 use lapid_tensor::{Error, Result, bail};
 use half::{bf16, f16};
@@ -22,7 +24,7 @@ struct Entry {
 }
 
 pub struct SafeTensors {
-    mmap: memmap2::Mmap,
+    mmap: Arc<memmap2::Mmap>,
     data_start: usize,
     entries: BTreeMap<String, Entry>,
     metadata: BTreeMap<String, String>,
@@ -37,7 +39,7 @@ fn elem_size(dtype: &str) -> Option<usize> {
         "F64" | "I64" | "U64" => 8,
         "F32" | "I32" | "U32" => 4,
         "F16" | "BF16" | "I16" | "U16" => 2,
-        "I8" | "U8" | "BOOL" | "F8_E4M3" | "F8_E5M2" => 1,
+        "I8" | "U8" | "BOOL" | "F8_E4M3" | "F8_E5M2" | "F8_E8M0" => 1,
         _ => return None,
     })
 }
@@ -104,7 +106,7 @@ impl SafeTensors {
             }
             entries.insert(name, Entry { dtype: dtype.to_string(), shape, begin, end });
         }
-        Ok(SafeTensors { mmap, data_start, entries, metadata })
+        Ok(SafeTensors { mmap: Arc::new(mmap), data_start, entries, metadata })
     }
 
     /// Tensor names, sorted.
@@ -140,14 +142,36 @@ impl SafeTensors {
         Ok(&self.mmap[self.data_start + e.begin..self.data_start + e.end])
     }
 
-    /// Tensor converted to f32 (F32, F16, BF16, F64 supported).
+    /// The whole file mapping and the byte range of a tensor in it (zero-copy streaming,
+    /// e.g. into a blob).
+    pub fn shared(&self, name: &str) -> Result<(lapid_format::Bytes, Range<usize>)> {
+        let e = self.entry(name)?;
+        Ok((self.mmap.clone(), self.data_start + e.begin..self.data_start + e.end))
+    }
+
+    /// Tensor converted to f32: floats (F32, F16, BF16, F64, F8_E4M3; F8_E8M0 as the power of
+    /// two it encodes) and integers (exact up to 2^24). Large tensors convert on all cores.
     pub fn to_f32(&self, name: &str) -> Result<Vec<f32>> {
         let e = self.entry(name)?;
         let b = self.bytes(name)?;
+        fn conv<const N: usize>(b: &[u8], f: impl Fn([u8; N]) -> f32 + Sync) -> Vec<f32> {
+            let n = b.len() / N;
+            let mut out = vec![0f32; n];
+            crate::parallel::fill_rows(&mut out, 1, 1 << 16, |r, o| {
+                for (y, c) in o.iter_mut().zip(b[r.start * N..r.end * N].chunks_exact(N)) {
+                    *y = f(c.try_into().unwrap_or([0; N]));
+                }
+            });
+            out
+        }
         Ok(match e.dtype.as_str() {
-            "F32" => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
-            "F16" => b.chunks_exact(2).map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32()).collect(),
-            "BF16" => b.chunks_exact(2).map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect(),
+            "F32" => conv::<4>(b, f32::from_le_bytes),
+            "F16" => conv::<2>(b, |c| f16::from_le_bytes(c).to_f32()),
+            "BF16" => conv::<2>(b, |c| bf16::from_le_bytes(c).to_f32()),
+            "F8_E4M3" => conv::<1>(b, |c| crate::microscale::e4m3(c[0])),
+            "F8_E8M0" => conv::<1>(b, |c| crate::microscale::e8m0(c[0])),
+            "I8" => conv::<1>(b, |c| c[0] as i8 as f32),
+            "U8" => conv::<1>(b, |c| c[0] as f32),
             "F64" => b
                 .chunks_exact(8)
                 .map(|c| {
