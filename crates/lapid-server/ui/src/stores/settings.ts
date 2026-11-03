@@ -39,11 +39,14 @@ interface SettingsState {
   models: Partial<Record<Capability, string>>;
   /** Per model id, the steering choices by file name; absent = the server's default. */
   steer: Record<string, Record<string, SteerChoice>>;
+  /** New chats live only in this tab: never written to browser storage. */
+  privateMode: boolean;
   setTheme: (t: Theme) => void;
   setSidebarOpen: (open: boolean) => void;
   setSampling: (s: Sampling) => void;
   setModel: (cap: Capability, id: string) => void;
   setSteer: (model: string, choices: Record<string, SteerChoice> | undefined) => void;
+  setPrivateMode: (on: boolean) => void;
 }
 
 export const useSettings = create<SettingsState>()(
@@ -54,6 +57,7 @@ export const useSettings = create<SettingsState>()(
       sampling: DEFAULT_SAMPLING,
       models: {},
       steer: {},
+      privateMode: false,
       setTheme: (theme) => set({ theme }),
       setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
       setSampling: (sampling) => set({ sampling }),
@@ -65,6 +69,7 @@ export const useSettings = create<SettingsState>()(
           else delete steer[model];
           return { steer };
         }),
+      setPrivateMode: (privateMode) => set({ privateMode }),
     }),
     {
       name: "lapid.settings",

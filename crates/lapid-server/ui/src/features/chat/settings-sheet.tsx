@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { RotateCcwIcon, SlidersHorizontalIcon } from "lucide-react";
+import { RotateCcwIcon, SlidersHorizontalIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
@@ -40,6 +40,10 @@ export function SettingsSheet({ convId }: { convId: string | null }) {
   const setSystemPrompt = useConversations((s) => s.setSystemPrompt);
   const draftSystem = useConversations((s) => s.draftSystem);
   const setDraftSystem = useConversations((s) => s.setDraftSystem);
+  const privateMode = useSettings((s) => s.privateMode);
+  const setPrivateMode = useSettings((s) => s.setPrivateMode);
+  const saved = useConversations((s) => s.conversations.filter((c) => !c.ephemeral).length);
+  const removeSaved = useConversations((s) => s.removeSaved);
 
   const form = useForm<Sampling>({ resolver: zodResolver(schema), defaultValues: sampling, mode: "onChange" });
   // Reset only when the sheet opens; resetting on every store update would fight the user's typing.
@@ -91,6 +95,29 @@ export function SettingsSheet({ convId }: { convId: string | null }) {
               name="enable_thinking"
               render={({ field }) => <Switch id="enable-thinking" checked={field.value} onCheckedChange={field.onChange} />}
             />
+          </div>
+          <div className="space-y-3 rounded-lg border p-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="private-mode">Private mode</Label>
+                <p className="text-xs text-muted-foreground">
+                  New chats stay in this tab only: nothing is written to this browser, and they are gone when you reload or close it. The
+                  server never writes chats to disk either.
+                </p>
+              </div>
+              <Switch id="private-mode" checked={privateMode} onCheckedChange={setPrivateMode} />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={saved === 0}
+              onClick={() => {
+                if (window.confirm(`Delete ${saved} saved chat${saved === 1 ? "" : "s"} from this browser?`)) removeSaved();
+              }}
+            >
+              <Trash2Icon /> Delete saved chats{saved > 0 ? ` (${saved})` : ""}
+            </Button>
           </div>
           <SteeringSection />
           <div className="grid grid-cols-2 gap-4">

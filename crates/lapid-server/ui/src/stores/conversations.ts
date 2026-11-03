@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import type { Timings, Usage } from "@/lib/api";
 import { uid } from "@/lib/utils";
+import { useSettings } from "@/stores/settings";
 
 export interface MessageStats extends Timings {
   completion_tokens?: number;
@@ -30,6 +31,8 @@ export interface Conversation {
   messages: Message[];
   createdAt: number;
   updatedAt: number;
+  /** Started in private mode: kept in memory only, never persisted. */
+  ephemeral?: boolean;
 }
 
 /** IndexedDB storage with write coalescing: streaming updates hit the store per frame, disk at most every 800 ms. */
@@ -74,6 +77,8 @@ interface ConversationState {
   patchMessage: (convId: string, msgId: string, patch: Partial<Message> | ((m: Message) => Partial<Message>)) => void;
   /** Drops the message with `msgId` and everything after it. */
   truncateFrom: (convId: string, msgId: string) => void;
+  /** Deletes every saved (non-private) conversation, here and in browser storage. */
+  removeSaved: () => void;
 }
 
 const touch = (c: Conversation, patch: Partial<Conversation>): Conversation => ({ ...c, ...patch, updatedAt: Date.now() });
@@ -91,7 +96,8 @@ export const useConversations = create<ConversationState>()(
         setDraftSystem: (draftSystem) => set({ draftSystem }),
         create: () => {
           const now = Date.now();
-          const conv: Conversation = { id: uid(), title: "New chat", systemPrompt: getState().draftSystem, messages: [], createdAt: now, updatedAt: now };
+          const ephemeral = useSettings.getState().privateMode || undefined;
+          const conv: Conversation = { id: uid(), title: "New chat", systemPrompt: getState().draftSystem, messages: [], createdAt: now, updatedAt: now, ephemeral };
           set((s) => ({ conversations: [conv, ...s.conversations], activeId: conv.id, draftSystem: "" }));
           return conv.id;
         },
@@ -125,13 +131,22 @@ export const useConversations = create<ConversationState>()(
             const i = c.messages.findIndex((m) => m.id === msgId);
             return i < 0 ? c : touch(c, { messages: c.messages.slice(0, i) });
           }),
+        removeSaved: () =>
+          set((s) => {
+            const conversations = s.conversations.filter((c) => c.ephemeral);
+            return { conversations, activeId: conversations.some((c) => c.id === s.activeId) ? s.activeId : null };
+          }),
       };
     },
     {
       name: "lapid.conversations",
       version: 1,
       storage: createJSONStorage(idbStorage),
-      partialize: (s) => ({ conversations: s.conversations, activeId: s.activeId }),
+      // Private chats never reach storage; the rest is saved as before.
+      partialize: (s) => {
+        const conversations = s.conversations.filter((c) => !c.ephemeral);
+        return { conversations, activeId: conversations.some((c) => c.id === s.activeId) ? s.activeId : null };
+      },
       onRehydrateStorage: () => () => useConversations.setState({ hydrated: true }),
     },
   ),

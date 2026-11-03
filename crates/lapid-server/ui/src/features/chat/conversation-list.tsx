@@ -1,4 +1,4 @@
-import { EllipsisIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { EllipsisIcon, EyeOffIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -80,6 +80,7 @@ export function ConversationList({ onSelect }: { onSelect?: () => void }) {
                   )}
                 >
                   {streamingConv === c.id && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-brand" />}
+                  {c.ephemeral && <EyeOffIcon aria-label="Private chat (not saved)" className="size-3.5 shrink-0" />}
                   <span className="truncate">{c.title}</span>
                 </button>
                 <DropdownMenu>
