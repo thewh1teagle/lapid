@@ -106,6 +106,15 @@ impl LapidFile {
         self.reader.blob(name)
     }
 
+    /// A named blob as host data sharing the file image (zero copy; keeps the image alive),
+    /// for blobs a model reads after loading, e.g. lookup tables gathered on the host.
+    pub fn blob_data(&self, name: &str) -> Option<HostData> {
+        let bytes = self.reader.blob(name)?;
+        let data = self.reader.data();
+        let start = bytes.as_ptr() as usize - (*data).as_ref().as_ptr() as usize;
+        Some(HostData::new(Arc::new(ImageSlice { data, start, end: start + bytes.len() })))
+    }
+
     /// The blob index (empty for files without a BLOBS section).
     pub fn blobs(&self) -> &[lapid_format::BlobInfo] {
         self.reader.blobs()

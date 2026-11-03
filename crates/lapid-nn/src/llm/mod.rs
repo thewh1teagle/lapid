@@ -1,5 +1,5 @@
 //! Building blocks of decoder LLMs shared by several hub models (Llama / Qwen families,
-//! Qwen3.5, Qwen4-Exp, DeepSeek V4, Qwen3-VL; Gemma 4 has the same MoE shape).
+//! Qwen3.5, Qwen4-Exp, DeepSeek V4 / V4.1, Qwen3-VL; Gemma 4 has the same MoE shape).
 //!
 //! * [`moe`]: softmax top-k routing and SwiGLU / GeGLU expert stacks applied with `MatMulId`,
 //!   the Qwen-style sparse MoE block (optional sigmoid-gated shared expert).
@@ -10,12 +10,15 @@
 //!   DeepSeek V4).
 //! * [`rope`]: inverse-frequency variants (linear, llama3, per-frequency factors, YaRN), cos /
 //!   sin tables, `rotate_half`, M-RoPE (Qwen-VL) and the interleaved tail RoPE (DeepSeek V4).
+//! * [`engram`]: n-gram hashed lookup tables gated into the hyper-connection streams
+//!   (DeepSeek V4.1): host hashing, host FP8 row gather, the gate.
 //! * [`head`]: token embedding + logits projection (`lm_head` or the tied embedding).
 //!
 //! Tensor names in the `load` functions are the ones the block is defined by (HF Qwen /
 //! upstream DeepSeek names under a caller-given prefix).
 
 pub mod delta_net;
+pub mod engram;
 pub mod gated_attention;
 pub mod head;
 pub mod hyper;

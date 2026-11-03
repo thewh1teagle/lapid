@@ -14,6 +14,8 @@ use std::str::FromStr;
 
 use lapid::{Error, Result};
 use serde_json::{Value, json};
+/// The Hugging Face library itself (normalizers, decoders, ... for model-specific conversions).
+pub use tokenizers;
 
 /// GPT-2 `bytes_to_unicode`: byte -> printable char used in byte-level BPE token strings.
 pub fn bytes_to_unicode() -> [char; 256] {

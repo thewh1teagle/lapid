@@ -25,6 +25,8 @@
 //! block output = post[j] y + sum_i comb[i, j] x[i]       for every stream j
 //! ```
 //! Its final head ([`SinkhornHead`]) collapses the streams with `pre = sigmoid(mix s + b) + eps`.
+//! [`SinkhornHc::mix`] / [`collapse`] / [`expand`] are the separate steps, for wirings that
+//! collapse with another block's `pre` (DeepSeek V4.1's lagged "single-pass" mHC).
 
 use lapid::{DType, Result, Tensor, bail};
 
@@ -127,6 +129,13 @@ pub struct SinkhornHc {
     ones: Tensor,
 }
 
+/// Mixing weights of [`SinkhornHc::mix`] (`pre` collapses, `post` / `comb` expand).
+pub struct HcMix {
+    pub pre: Tensor,
+    pub post: Tensor,
+    pub comb: Tensor,
+}
+
 /// Output of [`SinkhornHc::pre`].
 pub struct HcPre {
     /// Block input [n, D].
@@ -154,7 +163,8 @@ impl SinkhornHc {
         })
     }
 
-    pub fn pre(&self, x: &Tensor) -> Result<HcPre> {
+    /// Mixing weights of `x [n, hc, D]`: `pre` / `post` `[n, hc]`, `comb` `[n, hc, hc]`.
+    pub fn mix(&self, x: &Tensor) -> Result<HcMix> {
         let (n, hc) = (x.shape()[0], self.hc);
         let m = mixes(x, &self.func, &self.ones, self.norm_eps)?; // [n, mix]
         let eps = f64::from(self.eps);
@@ -169,16 +179,31 @@ impl SinkhornHc {
         for _ in 1..self.iters {
             comb = norm_src(&norm_dst(&comb)?)?;
         }
-        let collapsed = pre.unsqueeze(2)?.mul(x)?.sum(1, false)?; // [n, D]
-        Ok(HcPre { collapsed, post, comb })
+        Ok(HcMix { pre, post, comb })
+    }
+
+    pub fn pre(&self, x: &Tensor) -> Result<HcPre> {
+        let m = self.mix(x)?;
+        Ok(HcPre { collapsed: collapse(&m.pre, x)?, post: m.post, comb: m.comb })
     }
 
     /// `y [n, D]`, `residual [n, hc, D]` -> `[n, hc, D]`.
     pub fn post(&self, y: &Tensor, residual: &Tensor, pre: &HcPre) -> Result<Tensor> {
-        let expand = pre.post.unsqueeze(2)?.mul(&y.unsqueeze(1)?)?; // [n, hc, D]
-        let mixed = pre.comb.unsqueeze(3)?.mul(&residual.unsqueeze(2)?)?.sum(1, false)?; // [n, dst, D]
-        expand.add(&mixed)
+        expand(y, residual, &pre.post, &pre.comb)
     }
+}
+
+/// Block input `sum_i pre[i] x[i]`: `pre [n, hc]`, `x [n, hc, D]` -> `[n, D]`.
+pub fn collapse(pre: &Tensor, x: &Tensor) -> Result<Tensor> {
+    pre.unsqueeze(2)?.mul(x)?.sum(1, false)
+}
+
+/// Block output `post[j] y + sum_i comb[i, j] residual[i]` for every stream j: `y [n, D]`,
+/// `residual [n, hc, D]`, `post [n, hc]`, `comb [n, hc, hc]` -> `[n, hc, D]`.
+pub fn expand(y: &Tensor, residual: &Tensor, post: &Tensor, comb: &Tensor) -> Result<Tensor> {
+    let out = post.unsqueeze(2)?.mul(&y.unsqueeze(1)?)?; // [n, hc, D]
+    let mixed = comb.unsqueeze(3)?.mul(&residual.unsqueeze(2)?)?.sum(1, false)?; // [n, dst, D]
+    out.add(&mixed)
 }
 
 /// Final collapse of the [`SinkhornHc`] streams.

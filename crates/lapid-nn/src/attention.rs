@@ -6,8 +6,10 @@
 //! where a kernel needs contiguous heads.
 
 mod kv_cache;
+mod row_buffer;
 
 pub use kv_cache::KvCache;
+pub use row_buffer::RowBuffer;
 
 use lapid::{Result, Tensor, bail};
 
