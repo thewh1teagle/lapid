@@ -19,9 +19,13 @@ const TARGET_WARPS: usize = 8192;
 
 /// Consecutive k per lane and step for B dtype `b`: half a 32-element block for MXFP4
 /// (8 quant bytes + the scale per lane: ~7% faster than 4 bytes, whole blocks were slower
-/// at decode shapes), else 8.
+/// at decode shapes), a 32-element sub-block for the i-quants, else 8.
 pub(crate) fn lane_elems(b: DType) -> usize {
-    if b == DType::Mxfp4 { 16 } else { 8 }
+    match b {
+        DType::Mxfp4 => 16,
+        b if b.is_iquant() => 32,
+        _ => 8,
+    }
 }
 
 /// Warps per output column for `cols` output columns (all rows / batches) of length `k`
@@ -111,6 +115,7 @@ fn dot8(spec: &MatMulSpec, vec_a: bool, vec_b: bool, k: &str, out: &str) -> Stri
     match spec.b_dtype {
         DType::Q4K | DType::Q5K | DType::Q6K => kquant::gemv_dot(&mut g, spec, vec_a, k, out),
         DType::Mxfp4 => super::mxfp4::gemv_dot_half(&mut g, spec, vec_a, k, out),
+        d if d.is_iquant() => super::iquant::gemv_dot(&mut g, d, k, out),
         DType::Int8 | DType::Int4 => {
             let int8 = spec.b_dtype == DType::Int8;
             let e = g.reg("u32");
@@ -235,11 +240,18 @@ fn dot8(spec: &MatMulSpec, vec_a: bool, vec_b: bool, k: &str, out: &str) -> Stri
 }
 
 /// `id`: MatMulId variant (inputs a, b, ids; binds the error flag; see `moe`).
+/// i-quant B: A comes from the `q8_rows` pre-pass in scratch (bound after the output).
 pub(super) fn source(spec: &MatMulSpec, vec_a: bool, vec_b: bool, id: bool, w: u32) -> String {
-    let (args, ptrs) = if id {
-        ptx::args(&["a", "b", "ids", "out", "flag"])
-    } else {
-        args(spec)
+    let iq = spec.b_dtype.is_iquant();
+    let (args, ptrs) = match (id, iq) {
+        (true, false) => ptx::args(&["a", "b", "ids", "out", "flag"]),
+        (true, true) => ptx::args(&["a", "b", "ids", "out", "scratch", "flag"]),
+        (false, false) => args(spec),
+        (false, true) => {
+            let mut n = super::matmul::names(spec);
+            n.push("scratch".into());
+            ptx::args(&n.iter().map(String::as_str).collect::<Vec<_>>())
+        }
     };
     let da = dot8(spec, vec_a, vec_b, "%ka", "%sa");
     let db = dot8(spec, vec_a, vec_b, "%kb", "%sb");
@@ -256,6 +268,7 @@ pub(super) fn source(spec: &MatMulSpec, vec_a: bool, vec_b: bool, id: bool, w: u
         &[
             ("ARGS", &args),
             ("PTRS", &ptrs),
+            ("PROLOGUE", &if iq { super::iquant::smem_prologue(spec.b_dtype, 256) } else { String::new() }),
             ("DOT_A", &da),
             ("DOT_B", &db),
             ("EPILOGUE", &epilogue(spec)),

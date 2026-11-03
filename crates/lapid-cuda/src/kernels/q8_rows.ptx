@@ -1,0 +1,76 @@
+// Activation pre-pass of the i-quant GEMV: rows of A quantized to int8 per 32-element group
+// into scratch (int8 row r at byte r * K, f32 scale of group (r, g) at byte P[6] + 4 (r K/32 + g)),
+// d = amax / 127, q = round(x / d). One warp per group, 8 groups per 256-thread block.
+// Params: [rows, m, K, a.off, a.bs, a.rs, scales_off]; row r reads A at
+// a.off + (r / m) a.bs + (r % m) a.rs.
+.visible .entry lapid_main(
+{{ARGS}}
+)
+{
+    .reg .pred %p;
+    .reg .b32 %tx, %lane, %gid, %rows, %M, %K, %ng, %r, %gr, %bt, %i, %t, %src, %e, %q;
+    .reg .f32 %x, %ax, %sh, %d, %id;
+    .reg .b64 %ad;
+{{PTRS}}
+    mov.u32 %tx, %tid.x;
+    and.b32 %lane, %tx, 31;
+    shr.u32 %t, %tx, 5;
+    mov.u32 %gid, %ctaid.x;
+    mad.lo.u32 %gid, %gid, 8, %t;
+    ld.param.u32 %rows, [P+0];
+    ld.param.u32 %M, [P+4];
+    ld.param.u32 %K, [P+8];
+    shr.u32 %ng, %K, 5;
+    div.u32 %r, %gid, %ng;
+    rem.u32 %gr, %gid, %ng;
+    setp.ge.u32 %p, %r, %rows;
+    @%p bra DONE;
+    div.u32 %bt, %r, %M;
+    rem.u32 %i, %r, %M;
+    ld.param.u32 %src, [P+12];
+    ld.param.u32 %t, [P+16];
+    mad.lo.u32 %src, %bt, %t, %src;
+    ld.param.u32 %t, [P+20];
+    mad.lo.u32 %src, %i, %t, %src;
+    shl.b32 %t, %gr, 5;
+    add.u32 %src, %src, %t;
+    add.u32 %src, %src, %lane;
+{{LOAD_X}}
+    abs.f32 %ax, %x;
+    shfl.sync.bfly.b32 %sh, %ax, 16, 31, -1;
+    max.f32 %ax, %ax, %sh;
+    shfl.sync.bfly.b32 %sh, %ax, 8, 31, -1;
+    max.f32 %ax, %ax, %sh;
+    shfl.sync.bfly.b32 %sh, %ax, 4, 31, -1;
+    max.f32 %ax, %ax, %sh;
+    shfl.sync.bfly.b32 %sh, %ax, 2, 31, -1;
+    max.f32 %ax, %ax, %sh;
+    shfl.sync.bfly.b32 %sh, %ax, 1, 31, -1;
+    max.f32 %ax, %ax, %sh;
+    div.rn.f32 %d, %ax, 0f42FE0000;
+    setp.gt.f32 %p, %ax, 0f00000000;
+    div.rn.f32 %id, 0f42FE0000, %ax;
+    selp.f32 %id, %id, 0f00000000, %p;
+    mul.f32 %x, %x, %id;
+    cvt.rni.s32.f32 %q, %x;
+    min.s32 %q, %q, 127;
+    max.s32 %q, %q, -127;
+    // int8 at scratch + r K + 32 gr + lane
+    mad.lo.u32 %e, %r, %K, %lane;
+    shl.b32 %t, %gr, 5;
+    add.u32 %e, %e, %t;
+    cvt.u64.u32 %ad, %e;
+    add.s64 %ad, %ad, %g_scratch;
+    st.global.u8 [%ad], %q;
+    setp.ne.u32 %p, %lane, 0;
+    @%p bra DONE;
+    mad.lo.u32 %e, %r, %ng, %gr;
+    shl.b32 %e, %e, 2;
+    ld.param.u32 %t, [P+24];
+    add.u32 %e, %e, %t;
+    cvt.u64.u32 %ad, %e;
+    add.s64 %ad, %ad, %g_scratch;
+    st.global.f32 [%ad], %d;
+DONE:
+    ret;
+}

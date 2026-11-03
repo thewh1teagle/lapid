@@ -90,6 +90,18 @@ pub(super) fn plan(spec: &Arc<MatMulSpec>, d: &MatMulDims, caps: &Caps) -> Resul
         } else {
             super::grid1(blocks, caps)?
         };
+        if spec.b_dtype.is_iquant() {
+            // int8 activations from the q8_rows pre-pass: compact rows (bt * m + i) * k
+            let rows = d.batch * d.m;
+            let (so, _) = super::q8rows::layout(rows, d.k);
+            p.0[4] = 0;
+            p.0[5] = u32::try_from(d.m * d.k).map_err(|_| Error::new("too_large", "matmul: m * k exceeds 32-bit indexing"))?;
+            p.0[6] = d.k as u32;
+            p.0[10] = u32::try_from(so).map_err(|_| Error::new("too_large", "matmul: activations exceed 32-bit indexing"))?;
+            let gemv = Plan::new(Key::Gemv(spec.clone(), false, vb, w), p.0, grid, 256);
+            let a = [d.a.offset, d.a.batch_stride, d.a.row_stride];
+            return super::q8rows::plan(spec.a_dtype, 2 + spec.extra_dtypes.len(), rows, d.m, d.k, a, gemv, caps);
+        }
         return Ok(Plan::new(Key::Gemv(spec.clone(), va, vb, w), p.0, grid, 256));
     }
     let use_mma = mma_ok(spec, caps);

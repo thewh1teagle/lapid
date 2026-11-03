@@ -1,7 +1,8 @@
 // Matrix-vector product for small m with transposed B (the decoder hot path).
-// One warp per output column, 8 columns per 256-thread block, no shared memory and no
-// block barriers. Lane l covers EL = {{EL}} consecutive k per 32 EL-wide step (coalesced A
-// and B reads; EL = 16 for MXFP4: half a block per lane, else 8), two steps per
+// One warp per output column, 8 columns per 256-thread block, no block barriers (except
+// the i-quants' table copy into shared memory, PROLOGUE). Lane l covers EL = {{EL}}
+// consecutive k per 32 EL-wide step (coalesced A and B reads; EL = 16 for MXFP4: half a
+// block per lane, 32 for the i-quants: a sub-block, else 8), two steps per
 // iteration with all loads issued before the math; the column sum is a warp butterfly
 // and lane 0 runs the fused epilogue.
 // SPLIT (few columns): W = {{W}} warps per column split k (warp s starts at 64 EL s, steps
@@ -25,6 +26,7 @@
     .shared .align 4 .f32 red[8];
 // #endif
 {{PTRS}}
+{{PROLOGUE}}
     mov.u32 %tx, %tid.x;
     and.b32 %lane, %tx, 31;
     shr.u32 %warp, %tx, 5;

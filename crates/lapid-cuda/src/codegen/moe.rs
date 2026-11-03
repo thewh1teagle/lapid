@@ -82,6 +82,14 @@ pub(super) fn plan(spec: &Arc<MatMulIdSpec>, d: &MatMulIdDims, caps: &Caps) -> R
         } else {
             grid1((rows * cb) as u64, caps)?
         };
+        if spec.w_dtype.is_iquant() {
+            // int8 activations of the t token rows from the q8_rows pre-pass (A view is
+            // already compact: row bt / r at (bt / r) * k)
+            let (so, _) = super::q8rows::layout(d.t, d.k);
+            p.0[10] = u32::try_from(so).map_err(|_| bad("matmul_id: activations exceed 32-bit indexing"))?;
+            let gemv = Plan::new(Key::GemvId(ms, false, vb, w), p.0, grid, 256);
+            return super::q8rows::plan(spec.x_dtype, 3, d.t, 1, d.k, [0, d.k, 0], gemv, caps);
+        }
         return Ok(Plan::new(Key::GemvId(ms, va, vb, w), p.0, grid, 256));
     }
     let scratch = 4 * (2 * (d.e + 1) + rows);

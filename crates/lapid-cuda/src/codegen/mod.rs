@@ -15,12 +15,14 @@ mod flash;
 mod gdn;
 mod gemv;
 mod index;
+mod iquant;
 mod kquant;
 mod mxfp4;
 mod matmul;
 mod mma;
 mod moe;
 mod ptx;
+mod q8rows;
 mod reduce;
 mod rows;
 mod sinkhorn;
@@ -89,6 +91,8 @@ pub(crate) enum Key {
     Gdn(Arc<GatedDeltaNetSpec>, u32),
     /// Sinkhorn normalization of n x n matrices; n baked in.
     Sinkhorn(u32),
+    /// i-quant GEMV pre-pass: rows of A (dtype) to int8 + scales in scratch; bound inputs.
+    Q8Rows(DType, u32),
 }
 
 impl Key {
@@ -103,6 +107,7 @@ impl Key {
             Key::GemvId(..) | Key::MoeRoute | Key::GemmMmaId(..) => 3,
             Key::Gdn(..) => 6,
             Key::Softmax(_) | Key::Sinkhorn(_) => 1,
+            Key::Q8Rows(_, n) => *n as usize,
             Key::LayerNorm(_, rms, _) => 3 - *rms as usize,
             Key::AttnSplit(s, ..) | Key::AttnMerge(s) | Key::AttnMma(s, ..) => {
                 3 + s.mask_dtype.is_some() as usize
@@ -112,15 +117,19 @@ impl Key {
 
     /// Binds the backend scratch buffer after the output.
     pub fn uses_scratch(&self) -> bool {
-        matches!(
-            self,
-            Key::AttnSplit(_, false, ..)
-                | Key::AttnMerge(_)
-                | Key::TopK(_, true)
-                | Key::TopKMerge
-                | Key::MoeRoute
-                | Key::GemmMmaId(..)
-        )
+        match self {
+            Key::Gemv(s, ..) | Key::GemvId(s, ..) => s.b_dtype.is_iquant(),
+            k => matches!(
+                k,
+                Key::AttnSplit(_, false, ..)
+                    | Key::AttnMerge(_)
+                    | Key::TopK(_, true)
+                    | Key::TopKMerge
+                    | Key::MoeRoute
+                    | Key::GemmMmaId(..)
+                    | Key::Q8Rows(..)
+            ),
+        }
     }
 
     /// Binds the backend error flag (a host-visible u32) last: kernels that check indices
@@ -179,6 +188,7 @@ impl Key {
             Key::GemmMmaId(..) => "gemm_mma_id",
             Key::Gdn(..) => "gated_delta_net",
             Key::Sinkhorn(_) => "sinkhorn",
+            Key::Q8Rows(..) => "q8_rows",
         }
     }
 }
@@ -250,8 +260,21 @@ pub(crate) fn plan(kernel: &Kernel, caps: &Caps) -> Result<Plan> {
     Ok(p)
 }
 
-/// Generate the PTX body (without `.version` / `.target` header) for `key`.
-pub(crate) fn source(key: &Key, _caps: &Caps) -> String {
+/// Generate the PTX body (without `.version` / `.target` header) for `key`. Kernels reading
+/// i-quant weights get the format's lookup tables at module scope.
+pub(crate) fn source(key: &Key, caps: &Caps) -> String {
+    let weights = match key {
+        Key::Gemm(s) | Key::GemmMma(s, ..) | Key::Gemv(s, ..) | Key::GemvId(s, ..) | Key::GemmMmaId(s, ..) => Some(s.b_dtype),
+        Key::Gather(s) => Some(s.table_dtype),
+        _ => None,
+    };
+    match weights.filter(|d| d.is_iquant()) {
+        Some(d) => iquant::tables(d) + &kernel_source(key, caps),
+        None => kernel_source(key, caps),
+    }
+}
+
+fn kernel_source(key: &Key, _caps: &Caps) -> String {
     match key {
         Key::Ew(s, modes, out) => elementwise::source(s, modes, *out),
         Key::Reduce(s, row) => reduce::source(s, *row),
@@ -273,6 +296,7 @@ pub(crate) fn source(key: &Key, _caps: &Caps) -> String {
         Key::TopKMerge => index::source_topk_merge(),
         Key::TopKSmall(s) => index::source_topk_small(s),
         Key::Sinkhorn(n) => sinkhorn::source(*n),
+        Key::Q8Rows(a, n) => q8rows::source(*a, *n),
     }
 }
 

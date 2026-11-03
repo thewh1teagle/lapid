@@ -33,6 +33,8 @@ mod graph;
 #[cfg(test)]
 mod index_tests;
 #[cfg(test)]
+mod iquant_tests;
+#[cfg(test)]
 mod kquant_tests;
 #[cfg(test)]
 mod matmul_attn_tests;

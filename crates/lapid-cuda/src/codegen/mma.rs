@@ -215,6 +215,7 @@ fn b_parts(spec: &MatMulSpec, vec_b: bool) -> (String, String, String) {
     match spec.b_dtype {
         DType::Q4K | DType::Q5K | DType::Q6K => kquant::mma_b_parts(spec.b_dtype, LDS),
         DType::Mxfp4 => super::mxfp4::mma_b_parts(LDS),
+        d if d.is_iquant() => super::iquant::mma_b_parts(d, LDS),
         DType::Int8 | DType::Int4 => {
             let int8 = spec.b_dtype == DType::Int8;
             let words = if int8 { 4 } else { 2 };
