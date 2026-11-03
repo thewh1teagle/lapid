@@ -77,8 +77,8 @@ fn dspark_matches_reference() {
     let Some(file) = tiny_file("ref") else { return };
     let r = result();
     let refs = Activations::open(&root().join("dspark.safetensors")).expect("dspark.safetensors");
-    for dev in devices() {
-        let llm = load(&file, &dev, true, None).expect("load");
+    for (dev, slots) in devices().into_iter().flat_map(|d| [(d.clone(), None), (d, Some(2))]) {
+        let llm = load(&file, &dev, true, slots).expect("load");
         let m = llm.model();
         let d = m.dspark.as_ref().expect("dspark loaded");
         let (bs, v) = (d.block_size, m.cfg.vocab_size);
@@ -95,7 +95,7 @@ fn dspark_matches_reference() {
                 let want = &want_logits[j * bs * v..(j + 1) * bs * v];
                 let scale = want.iter().fold(0f32, |a, x| a.max(x.abs())).max(1.0);
                 let diff = max_diff(&logits, want);
-                assert!(diff < 2e-4 * scale, "{} {case} step {j}: draft logits differ by {diff} (scale {scale})", dev.name());
+                assert!(diff < 2e-4 * scale, "{} slots {slots:?} {case} step {j}: draft logits differ by {diff} (scale {scale})", dev.name());
                 let cd = max_diff(&conf, &want_conf[j * bs..(j + 1) * bs]);
                 assert!(cd < 1e-4, "{} {case} step {j}: confidence differs by {cd}", dev.name());
                 for (i, &t) in toks.iter().enumerate() {
@@ -208,7 +208,7 @@ fn speculative_greedy_matches_plain() {
                 let want: Vec<u32> = llm.generate(&mut s, &prompt, opts.clone()).expect("plain").map(|t| t.expect("token").id).collect();
                 assert_eq!(&want[..20], &ids(&r["cases"][case]["generated_tokens"])[..20], "{} {case}: plain greedy vs reference", dev.name());
                 // the model's own drafts (spec on for the generation only)
-                set_spec(Some(SpecConfig::default()));
+                set_spec(Some(SpecConfig { p_min: 0.0, ..SpecConfig::default() }));
                 let mut s = llm.new_session();
                 let stream = llm.generate(&mut s, &prompt, opts.clone());
                 set_spec(None);
