@@ -48,7 +48,9 @@ pub type Lfm3 = Llm<Lfm3Model>;
 `forward` builds the lazy graph for new tokens at `st.offset()`: append K/V with
 `st.kv.append(layer, ..)`, keep conv or SSM state with `st.with_slot(i, |s| ..)`, call
 `taps.tap("layers.{i}", &x)` for every intermediate the reference names, and return the logits
-of `rows`. `Llm<M>` then gives `from_hub`, `load`, `load_bytes`, chunked prefill, decode,
+of `rows`. For activation steering ([STEERING.md](STEERING.md)) pass the attention output,
+the FFN output and the residual after each block through `taps.steer(Hook::AttnOut | FfnOut |
+Resid, i, &x)` and list them in `CausalLm::steer_hooks` (identity when no file is loaded). `Llm<M>` then gives `from_hub`, `load`, `load_bytes`, chunked prefill, decode,
 sessions with prefix reuse, chat templates (Jinja), sampling, stop tokens and strings,
 streaming, cancellation and timing. Templates that read globals beyond messages / tools / thinking
 (Llama 3.x `date_string`) get them from `CausalLm::template_globals` (model defaults) or

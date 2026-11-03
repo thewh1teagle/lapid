@@ -40,6 +40,9 @@ lapid serve -hf unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M   # OpenAI API and chat UI on :
 lapid run nvidia/parakeet-tdt-0.6b-v3 audio.wav     # speech to text
 ```
 
+Steer a chat model at run time with a small [steering file](docs/STEERING.md), e.g. remove
+refusals from DeepSeek V4.1 on any quantization: `lapid run model.lapid --steer deepseek41-heretic.safetensors`.
+
 ## Library
 
 ```sh
