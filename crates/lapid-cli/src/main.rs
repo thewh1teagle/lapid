@@ -113,10 +113,21 @@ struct ModelArgs {
     /// cpu, gpu, metal[:N], cuda[:N] or vulkan[:N] (default: best available, or $LAPID_DEVICE).
     #[arg(long)]
     device: Option<String>,
+    /// Read weights in place from the mmap'd model file (default: only when it does not fit).
+    #[arg(long, overrides_with = "no_mmap")]
+    mmap: bool,
+    /// Always copy weights to the device.
+    #[arg(long = "no-mmap", overrides_with = "mmap")]
+    no_mmap: bool,
 }
 
 impl ModelArgs {
     fn hub(self) -> lapid_hub::cmd::ModelArgs {
+        if self.mmap {
+            lapid::set_residency(lapid::Residency::Mmap);
+        } else if self.no_mmap {
+            lapid::set_residency(lapid::Residency::Upload);
+        }
         lapid_hub::cmd::ModelArgs { model: self.model, dtype: self.dtype, device: self.device }
     }
 }
@@ -218,6 +229,10 @@ mod tests {
         let cli = Cli::try_parse_from(["lapid", "verify", "whisper", "--model", "x.lapid", "--dtype", "q4_k_m"]).expect("parse");
         let Command::Verify { model, model_args, .. } = cli.command else { panic!("not verify") };
         assert_eq!((model.as_str(), model_args.model.as_deref()), ("whisper", Some("x.lapid")));
+        let cli = Cli::try_parse_from(["lapid", "run", "m.lapid", "--no-mmap", "-p", "hi"]).expect("parse");
+        assert!(matches!(cli.command, Command::Run(a) if a.load.no_mmap && !a.load.mmap));
+        let cli = Cli::try_parse_from(["lapid", "bench", "llama", "--mmap"]).expect("parse");
+        assert!(matches!(cli.command, Command::Bench { model_args, .. } if model_args.mmap));
         let cli = Cli::try_parse_from(["lapid", "convert", "a/b", "--dtype", "q5_k"]).expect("parse");
         assert!(matches!(cli.command, Command::Convert { dtype, .. } if dtype == "q5_k"));
     }

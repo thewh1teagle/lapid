@@ -102,6 +102,9 @@ impl CudaBackend {
         if self.ctx.integrated {
             v.push("unified memory".to_string());
         }
+        if self.ctx.host_access {
+            v.push("host page tables".to_string());
+        }
         v.push(format!("PTX {}.{}", c.ptx_isa / 10, c.ptx_isa % 10));
         v.join(", ")
     }
@@ -187,8 +190,15 @@ impl Backend for CudaBackend {
         Ok(Arc::new(buf))
     }
 
+    fn map_host(&self, host: &lapid_tensor::HostData) -> Result<Option<DeviceData>> {
+        Ok(CudaBuffer::map(&self.ctx, host).map(|b| Arc::new(b) as DeviceData))
+    }
+
     fn download(&self, buf: &DeviceData) -> Result<Vec<u8>> {
         let b = as_cuda(buf, &self.ctx)?;
+        if let Some(bytes) = b.mapped_bytes() {
+            return Ok(bytes.to_vec());
+        }
         let mut out = vec![0u8; b.len_bytes()];
         if !out.is_empty() {
             self.lock()?.download(&self.ctx, b, &mut out)?;

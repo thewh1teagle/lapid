@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, Weak};
 use lapid_format::{Bytes, Reader};
 use lapid_tensor::{Error, HostData, Op, Result, Tensor, bail};
 
+use crate::residency::{self, Advice, Residency};
 use crate::runtime::lock;
 
 /// An opened .lapid file. Tensors are `Op::Host` leaves backed by the file image (an mmap
@@ -17,6 +18,10 @@ pub struct LapidFile {
     pub tensors: BTreeMap<String, Tensor>,
     /// Keeps the blob index, components and kind (its `metadata` was moved out).
     reader: Reader,
+    /// The whole file image (for page-cache hints).
+    image: Bytes,
+    /// `Auto` decision made at open: stream the weights from the mapping.
+    streams: bool,
 }
 
 /// A byte range of a shared file image; the bytes of one tensor. Zero copy.
@@ -35,24 +40,46 @@ impl AsRef<[u8]> for ImageSlice {
 
 type WeakImage = Weak<dyn AsRef<[u8]> + Send + Sync>;
 
-/// Address ranges of live .lapid images. Host data inside them is model weights, which the
-/// upload cache keeps pinned for the device's lifetime (see `runtime::cache`).
-static FILE_RANGES: Mutex<Vec<(usize, usize, WeakImage)>> = Mutex::new(Vec::new());
+/// A live .lapid image. Host data inside it is model weights, which the runtime either
+/// keeps pinned on the device for its lifetime or reads in place (see `residency`).
+struct Image {
+    start: usize,
+    end: usize,
+    data: WeakImage,
+    /// `Auto` chose to stream this file (decided at open).
+    streams: bool,
+}
 
-fn register_image(data: &Bytes) {
+static FILE_RANGES: Mutex<Vec<Image>> = Mutex::new(Vec::new());
+
+/// Register a file image; returns the `Auto` decision for it. Only real file mappings
+/// (`mapped`) may stream: caller memory is resident anyway.
+fn register_image(data: &Bytes, weights: u64, mapped: bool) -> bool {
     let bytes = (**data).as_ref();
     let start = bytes.as_ptr() as usize;
     let mut ranges = lock(&FILE_RANGES);
-    ranges.retain(|(_, _, w)| w.strong_count() > 0);
-    ranges.push((start, start + bytes.len(), Arc::downgrade(data)));
+    ranges.retain(|i| i.data.strong_count() > 0);
+    let streams = mapped && residency::residency() == Residency::Auto && {
+        let resident: u64 = ranges.iter().filter(|i| !i.streams).map(|i| (i.end - i.start) as u64).sum();
+        residency::auto_streams(weights, resident)
+    };
+    ranges.push(Image { start, end: start + bytes.len(), data: Arc::downgrade(data), streams });
+    streams
 }
 
-/// True when the `(ptr, len)` key of a `HostData` lies inside a live .lapid image.
-pub(crate) fn is_file_backed(key: (usize, usize)) -> bool {
+/// Effective residency (`Upload` or `Mmap`) of host data whose `(ptr, len)` key lies inside
+/// a live .lapid image; `None` for other host data.
+pub(crate) fn weight_residency(key: (usize, usize)) -> Option<Residency> {
     let (ptr, len) = key;
-    lock(&FILE_RANGES)
+    let streams = lock(&FILE_RANGES)
         .iter()
-        .any(|(s, e, w)| ptr >= *s && ptr.saturating_add(len) <= *e && w.strong_count() > 0)
+        .find(|i| ptr >= i.start && ptr.saturating_add(len) <= i.end && i.data.strong_count() > 0)
+        .map(|i| i.streams)?;
+    Some(match residency::residency() {
+        Residency::Auto if streams => Residency::Mmap,
+        Residency::Auto => Residency::Upload,
+        r => r,
+    })
 }
 
 impl LapidFile {
@@ -60,25 +87,40 @@ impl LapidFile {
     pub fn open(path: impl AsRef<Path>) -> Result<LapidFile> {
         let path = path.as_ref();
         let reader = Reader::open(path)?;
-        LapidFile::from_reader(reader)
-            .map_err(|e| Error::new(e.code, format!("{}: {}", path.display(), e.message)))
+        let f = LapidFile::from_reader(reader, cfg!(not(target_arch = "wasm32")))
+            .map_err(|e| Error::new(e.code, format!("{}: {}", path.display(), e.message)))?;
+        if f.residency() == Residency::Mmap {
+            // 2 MiB page-cache folios: ~10 GB/s cold reads instead of ~4, and mapping /
+            // locking the pages around GPU evals gets far cheaper.
+            f.advise(Advice::HugePage);
+        }
+        if f.streams {
+            let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+            crate::log::emit(&format!(
+                "[lapid] {}: {:.1} GiB of weights, {:.1} GiB available: streaming weights from the file (mmap; LAPID_MMAP=0 / --no-mmap to upload)",
+                path.display(),
+                gb(f.weight_bytes()),
+                gb(residency::available_memory().unwrap_or(0)),
+            ));
+        }
+        Ok(f)
     }
 
     /// A complete .lapid image in memory (e.g. `Arc::new(vec)`), zero copy: tensors are
     /// slices of `bytes`, which stay alive as long as any tensor does.
     pub fn from_bytes(bytes: Bytes) -> Result<LapidFile> {
-        LapidFile::from_reader(Reader::from_bytes(bytes)?)
+        LapidFile::from_reader(Reader::from_bytes(bytes)?, false)
     }
 
     /// [`LapidFile::from_bytes`] for a static image, e.g. `include_bytes!("model.lapid")`.
     pub fn from_static(bytes: &'static [u8]) -> Result<LapidFile> {
-        LapidFile::from_reader(Reader::from_static(bytes)?)
+        LapidFile::from_reader(Reader::from_static(bytes)?, false)
     }
 
-    fn from_reader(mut reader: Reader) -> Result<LapidFile> {
+    fn from_reader(mut reader: Reader, mapped: bool) -> Result<LapidFile> {
         let data = reader.data();
-        register_image(&data);
         let image_len = (*data).as_ref().len();
+        let weights: u64 = reader.tensors.iter().map(|t| t.nbytes).sum();
 
         let mut tensors = BTreeMap::new();
         for info in &reader.tensors {
@@ -97,8 +139,30 @@ impl LapidFile {
                 bail!("format", "duplicate tensor name '{}'", info.name);
             }
         }
+        let streams = register_image(&data, weights, mapped);
         let metadata = std::mem::take(&mut reader.metadata);
-        Ok(LapidFile { metadata, tensors, reader })
+        Ok(LapidFile { metadata, tensors, reader, image: data, streams })
+    }
+
+    /// Total bytes of tensor data.
+    pub fn weight_bytes(&self) -> u64 {
+        self.reader.tensors.iter().map(|t| t.nbytes).sum()
+    }
+
+    /// Where this file's weights live at eval under the current policy: `Upload` (copied to
+    /// the device once) or `Mmap` (read in place from the file mapping).
+    pub fn residency(&self) -> Residency {
+        match residency::residency() {
+            Residency::Auto if self.streams => Residency::Mmap,
+            Residency::Auto => Residency::Upload,
+            r => r,
+        }
+    }
+
+    /// Page-cache hint for the whole file image (e.g. `Advice::Random` for weights read
+    /// scattered, like MoE experts). See [`crate::advise`] for one tensor.
+    pub fn advise(&self, advice: Advice) {
+        let _ = residency::advise_host(&HostData::new(self.image.clone()), None, advice);
     }
 
     /// Bytes of a named blob (e.g. `"tokenizer/tokens.json"`), zero copy. `None` if absent.
@@ -169,7 +233,7 @@ mod tests {
         let bytes = f.bytes("x").expect("bytes");
         let base = (*image).as_ref().as_ptr() as usize;
         assert!(bytes.as_ptr() as usize >= base && (bytes.as_ptr() as usize) < base + (*image).as_ref().len());
-        assert!(is_file_backed((bytes.as_ptr() as usize, bytes.len())));
+        assert_eq!(weight_residency((bytes.as_ptr() as usize, bytes.len())).map(|_| ()), Some(()));
         assert_eq!(f.blob("note.txt"), Some(&b"hi"[..]));
         let dev = crate::Device::cpu();
         let y = x.mul_scalar(2.0).expect("mul");

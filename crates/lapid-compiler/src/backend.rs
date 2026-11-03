@@ -1,6 +1,6 @@
 //! Backend trait. CONTRACT FILE — owned by the coordinator.
 
-use lapid_tensor::{DeviceData, Result};
+use lapid_tensor::{DeviceData, HostData, Result};
 
 use crate::ir::Launch;
 
@@ -13,6 +13,12 @@ pub trait Backend: Send + Sync {
     fn alloc(&self, bytes: usize) -> Result<DeviceData>;
     /// Allocate and fill.
     fn upload(&self, bytes: &[u8]) -> Result<DeviceData>;
+    /// Device view of host bytes without copying (file-backed weights that outlive the buffer).
+    /// The returned buffer keeps `host` alive and is read-only: kernels never write it.
+    /// `Ok(None)`: not supported here (or not for these bytes); the runtime uploads as before.
+    fn map_host(&self, _host: &HostData) -> Result<Option<DeviceData>> {
+        Ok(None)
+    }
     /// Copy back to host (waits for pending work).
     fn download(&self, buf: &DeviceData) -> Result<Vec<u8>>;
     /// Copy the first `out.len()` bytes back into `out` (waits for pending work), e.g. into

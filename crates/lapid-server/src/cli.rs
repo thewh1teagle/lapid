@@ -100,6 +100,14 @@ pub struct LoadArgs {
     /// llama-server `--jinja`: accepted (chat templates are always rendered).
     #[arg(long)]
     pub jinja: bool,
+    /// Read weights in place from the mmap'd model file (streamed from disk when larger
+    /// than memory) instead of copying them to the device. Default: only when the model
+    /// does not fit in available memory (or $LAPID_MMAP=0|1|auto).
+    #[arg(long, overrides_with = "no_mmap")]
+    pub mmap: bool,
+    /// Always copy weights to the device (the default when the model fits).
+    #[arg(long = "no-mmap", overrides_with = "mmap")]
+    pub no_mmap: bool,
 }
 
 impl LoadArgs {
@@ -107,8 +115,13 @@ impl LoadArgs {
         LoadOptions { dtype: self.dtype.clone(), sessions: self.sessions, defaults: sampling.params() }
     }
 
-    /// Apply process-wide settings (threads) and print notes on ignored flags.
+    /// Apply process-wide settings (threads, weight residency) and print notes on ignored flags.
     pub fn apply(&self) {
+        if self.mmap {
+            lapid::set_residency(lapid::Residency::Mmap);
+        } else if self.no_mmap {
+            lapid::set_residency(lapid::Residency::Upload);
+        }
         if let Some(t) = self.threads {
             // SAFETY: called at startup, before any other thread is spawned.
             unsafe { std::env::set_var("LAPID_THREADS", t.to_string()) };
