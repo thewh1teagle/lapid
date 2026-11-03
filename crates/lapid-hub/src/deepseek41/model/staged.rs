@@ -94,6 +94,7 @@ impl Deepseek41Model {
         // what a chunk waits for. Decode guesses are right for about half the misses but cost
         // an extra router and sync per layer and compete with the reads waited for: slower.
         let speculate = cache.speculative() && n > 1;
+        let mut feats: Vec<Tensor> = Vec::new();
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some((p, host_ids)) = pending.take() {
                 let li = p.layer;
@@ -103,6 +104,7 @@ impl Deepseek41Model {
             if let Some(eg) = &layer.engram {
                 x = Self::engram(eg, &x, engram_rows[i].as_ref())?;
             }
+            let mut feat = self.feature(i, &x)?;
             let am = layer.attn_hc.mix(&x)?;
             let xa = match &pre {
                 Some(p) => collapse(p, &x)?,
@@ -134,6 +136,7 @@ impl Deepseek41Model {
                 cut.extend(shared.tensors_mut());
                 cut.extend(pend_taps.iter_mut().map(|(_, t)| t));
                 cut.extend(guess.as_mut());
+                cut.extend(feat.as_mut());
                 let t = Instant::now();
                 realize(dev, cut)?;
                 eval += t.elapsed();
@@ -141,6 +144,7 @@ impl Deepseek41Model {
             for (name, t) in pend_taps.drain(..) {
                 taps.tap(name, &t);
             }
+            feats.extend(feat);
             pre = Some(fm_pre);
             let t = Instant::now();
             let host_ids = dev.to_vec_i32(&p.ids)?;
@@ -178,7 +182,7 @@ impl Deepseek41Model {
             }
             logits = out;
         }
-        stage(st, next, ids, self.hash.as_ref());
+        stage(st, next, ids, self.hash.as_ref(), self.features(feats)?);
         self.stats.record(cache, n, before, ForwardTimes { wall: t0.elapsed(), eval });
         Ok(logits)
     }

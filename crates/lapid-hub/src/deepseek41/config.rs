@@ -33,6 +33,21 @@ impl EngramConfig {
     }
 }
 
+/// The DSpark draft head (`dspark_*` keys; checkpoint `mtp.{0..stages}`): block-diffusion
+/// stages over the target's features, with a Markov and a confidence head on the last.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DsparkConfig {
+    pub stages: usize,
+    /// Tokens per draft block (anchor + noise), = draft tokens at most.
+    pub block_size: usize,
+    pub noise_token: u32,
+    /// Target layers whose input streams (mean over hc) feed the draft.
+    pub targets: Vec<usize>,
+    pub markov_rank: usize,
+    pub n_experts: usize,
+    pub top_k: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Deepseek41Config {
     pub vocab_size: usize,
@@ -77,6 +92,7 @@ pub struct Deepseek41Config {
     pub norm_eps: f32,
     pub max_positions: usize,
     pub engram: Option<EngramConfig>,
+    pub dspark: Option<DsparkConfig>,
 }
 
 fn get_usize(v: &Value, key: &str) -> Result<usize> {
@@ -133,6 +149,28 @@ fn engram(v: &Value) -> Result<Option<EngramConfig>> {
         pad_token_id: opt_usize(v, "engram_pad_token_id").or_else(|| opt_usize(v, "engram_pad_id")).unwrap_or(2),
         compressed_vocab_size: get_usize(v, "engram_compressed_vocab_size")?,
     }))
+}
+
+fn dspark(v: &Value, n_layers: usize, ratios: &[usize]) -> Result<Option<DsparkConfig>> {
+    let stages = opt_usize(v, "num_nextn_predict_layers").unwrap_or(0);
+    let block_size = opt_usize(v, "dspark_block_size").unwrap_or(0);
+    if stages == 0 || block_size == 0 {
+        return Ok(None);
+    }
+    let c = DsparkConfig {
+        stages,
+        block_size,
+        noise_token: get_usize(v, "dspark_noise_token_id")? as u32,
+        targets: usize_list(v, "dspark_target_layer_ids"),
+        markov_rank: opt_usize(v, "dspark_markov_rank").unwrap_or(256),
+        n_experts: opt_usize(v, "dspark_n_routed_experts").unwrap_or(get_usize(v, "n_routed_experts")?),
+        top_k: opt_usize(v, "dspark_num_experts_per_tok").unwrap_or(get_usize(v, "num_experts_per_tok")?),
+    };
+    let stage_ratios = ratios.get(n_layers..).unwrap_or_default();
+    if c.targets.is_empty() || c.targets.iter().any(|&t| t >= n_layers) || stage_ratios.iter().any(|&r| r != 0) || c.top_k == 0 || c.top_k > c.n_experts {
+        bail!("metadata", "deepseek41: invalid dspark config {c:?} (stage compress ratios {stage_ratios:?})");
+    }
+    Ok(Some(c))
 }
 
 impl Deepseek41Config {
@@ -192,6 +230,7 @@ impl Deepseek41Config {
             norm_eps: opt_f32(v, "rms_norm_eps").unwrap_or(1e-6),
             max_positions: opt_usize(v, "max_position_embeddings").unwrap_or(1 << 20),
             engram: engram(v)?,
+            dspark: dspark(v, n_layers, &ratios)?,
         };
         cfg.validate()?;
         Ok(cfg)

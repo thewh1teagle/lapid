@@ -33,13 +33,15 @@ fn compressor(l: &Loader<'_>, cfg: &Deepseek41Config, p: &str, ratio: usize) -> 
     })
 }
 
-fn attention(l: &Loader<'_>, cfg: &Deepseek41Config, i: usize) -> Result<Attention> {
-    let p = format!("layers.{i}.attn");
+/// Attention of backbone layer `i` (`Some`) or of a DSpark stage (`None`: sliding window
+/// only) under prefix `p`.
+pub(super) fn attention(l: &Loader<'_>, cfg: &Deepseek41Config, p: &str, layer: Option<usize>) -> Result<Attention> {
     let (d, h, hd, eps) = (cfg.hidden_size, cfg.n_head, cfg.head_dim, cfg.norm_eps);
     let (ql, g, ol) = (cfg.q_lora_rank, cfg.o_groups, cfg.o_lora_rank);
     let lin = |n: &str, o: usize, inp: usize| l.linear_checked(&format!("{p}.{n}"), o, inp, false);
-    let ratio = cfg.compress_ratios[i];
+    let ratio = layer.map_or(0, |i| cfg.compress_ratios[i]);
     let rope = if ratio == 0 { TailRope::new(cfg.rope_dim, cfg.rope_theta, None) } else { TailRope::new(cfg.rope_dim, cfg.compress_rope_theta, cfg.yarn.as_ref()) };
+    let i = layer.unwrap_or(usize::MAX);
     let kv_source = cfg.kv_source_layers.contains(&i);
     let index_source = cfg.index_source_layers.contains(&i);
     let indexer = if index_source {
@@ -59,7 +61,7 @@ fn attention(l: &Loader<'_>, cfg: &Deepseek41Config, i: usize) -> Result<Attenti
         wo_a_act_quant: l.act_quant(&wo_a)?,
         wo_b: lin("wo_b", d, g * ol)?,
         sinks: f32_param(l, &format!("{p}.attn_sink"), &[h])?.reshape(&[1, h, 1])?,
-        comp: if kv_source { Some(compressor(l, cfg, &p, ratio)?) } else { None },
+        comp: if kv_source { Some(compressor(l, cfg, p, ratio)?) } else { None },
         indexer,
         candidates: (cfg.candidate_source == Some(i)).then_some(Candidates { topk_blocks: cfg.candidate_topk_blocks, block_size: cfg.candidate_block_size }),
         uses_candidates: index_source && cfg.candidate_source.is_some_and(|c| c < i),
@@ -72,20 +74,19 @@ fn attention(l: &Loader<'_>, cfg: &Deepseek41Config, i: usize) -> Result<Attenti
     })
 }
 
-/// The MoE of layer `i` with its routed experts still unplaced, and their host stacks
-/// `[w1, w3, w2]` (see [`place_experts`]).
-fn moe(l: &Loader<'_>, cfg: &Deepseek41Config, i: usize) -> Result<(Moe, Vec<Tensor>)> {
-    let p = format!("layers.{i}.ffn");
-    let (d, e, inter) = (cfg.hidden_size, cfg.n_experts, cfg.moe_intermediate);
+/// The MoE under prefix `p` (`e` experts, top `k`; cache layer `layer`) with its routed
+/// experts still unplaced, and their host stacks `[w1, w3, w2]` (see [`place_experts`]).
+pub(super) fn moe(l: &Loader<'_>, cfg: &Deepseek41Config, p: &str, (e, k): (usize, usize), layer: usize) -> Result<(Moe, Vec<Tensor>)> {
+    let (d, inter) = (cfg.hidden_size, cfg.moe_intermediate);
     let stack = |w: &str, shape: &[usize]| l.host_tensor_checked(&format!("{p}.experts.{w}"), shape);
     let stacks = vec![stack("w1", &[e, inter, d])?, stack("w3", &[e, inter, d])?, stack("w2", &[e, d, inter])?];
     let shared = |w: &str, o: usize, inp: usize| l.linear_checked(&format!("{p}.shared_experts.{w}"), o, inp, false);
     let moe = Moe {
         router: f32_param(l, &format!("{p}.gate.weight"), &[e, d])?,
         bias: f32_param(l, &format!("{p}.gate.bias"), &[e])?,
-        routed: Routed::Cached { layer: i, act_quant: l.act_quant(&format!("{p}.experts.w1"))? },
+        routed: Routed::Cached { layer, act_quant: l.act_quant(&format!("{p}.experts.w1"))? },
         shared: [shared("w1", inter, d)?, shared("w3", inter, d)?, shared("w2", d, inter)?],
-        top_k: cfg.top_k,
+        top_k: k,
         norm_topk: cfg.norm_topk_prob,
         route_scale: cfg.route_scale,
         limit: (cfg.swiglu_limit > 0.0).then_some(cfg.swiglu_limit),
@@ -134,10 +135,7 @@ fn place_experts(l: &Loader<'_>, cfg: &Deepseek41Config, moes: &mut [&mut Moe], 
     match slots {
         None => {
             for (m, s) in moes.iter_mut().zip(stacks) {
-                let Routed::Cached { act_quant, .. } = m.routed else { continue };
-                let [w1, w3, w2] = <[Tensor; 3]>::try_from(s).map_err(|_| Error::new("internal", "deepseek41: expert stacks"))?;
-                let up = |t: &Tensor| l.device.upload(t);
-                m.routed = Routed::Direct(Experts { gate_up: GateUp::Split { gate: up(&w1)?, up: up(&w3)? }, down: up(&w2)?, act: lapid_nn::Activation::Silu, limit: m.limit, act_quant });
+                upload_experts(l, m, s)?;
             }
             Ok(None)
         }
@@ -149,6 +147,15 @@ fn place_experts(l: &Loader<'_>, cfg: &Deepseek41Config, moes: &mut [&mut Moe], 
             Ok(Some(ExpertCache::new(l.device, stacks.into_iter().map(Some).collect(), n)?))
         }
     }
+}
+
+/// Make `m`'s routed experts graph leaves on the device (host stacks `[w1, w3, w2]`).
+pub(super) fn upload_experts(l: &Loader<'_>, m: &mut Moe, stacks: Vec<Tensor>) -> Result<()> {
+    let Routed::Cached { act_quant, .. } = m.routed else { return Ok(()) };
+    let [w1, w3, w2] = <[Tensor; 3]>::try_from(stacks).map_err(|_| Error::new("internal", "deepseek41: expert stacks"))?;
+    let up = |t: &Tensor| l.device.upload(t);
+    m.routed = Routed::Direct(Experts { gate_up: GateUp::Split { gate: up(&w1)?, up: up(&w3)? }, down: up(&w2)?, act: lapid_nn::Activation::Silu, limit: m.limit, act_quant });
+    Ok(())
 }
 
 fn engram_layer(l: &Loader<'_>, cfg: &Deepseek41Config, i: usize, module: usize) -> Result<Engram> {
@@ -199,7 +206,7 @@ pub(super) fn model(l: &Loader<'_>, meta: &Value) -> Result<Deepseek41Model> {
     let mut layers = Vec::with_capacity(cfg.n_layers);
     let mut stacks = Vec::with_capacity(cfg.n_layers);
     for i in 0..cfg.n_layers {
-        let (moe, s) = moe(l, &cfg, i)?;
+        let (moe, s) = moe(l, &cfg, &format!("layers.{i}.ffn"), (cfg.n_experts, cfg.top_k), i)?;
         stacks.push(s);
         let p = format!("layers.{i}");
         let conn = |kind: &str| SinkhornHc::load(l, &format!("{p}.hc_{kind}"), [hc, d, cfg.hc_sinkhorn_iters], cfg.hc_eps, eps);
@@ -209,13 +216,15 @@ pub(super) fn model(l: &Loader<'_>, meta: &Value) -> Result<Deepseek41Model> {
             ffn_hc: conn("ffn")?,
             attn_norm: l.rms_norm_checked(&format!("{p}.attn_norm"), d, eps)?,
             ffn_norm: l.rms_norm_checked(&format!("{p}.ffn_norm"), d, eps)?,
-            attn: attention(l, &cfg, i)?,
+            attn: attention(l, &cfg, &format!("layers.{i}.attn"), Some(i))?,
             moe,
         });
     }
     let embed = Embedding::new(l.tensor_checked(EMBED, &[cfg.vocab_size, d])?);
     let head = l.linear_checked("head", cfg.vocab_size, d, false)?;
     let norm = l.rms_norm_checked("norm", d, eps)?;
+    // The draft (small, uploaded) before the expert cache takes what is left.
+    let dspark = super::dspark::load(l, &cfg)?;
     let cache = place_experts(l, &cfg, &mut layers.iter_mut().map(|l| &mut l.moe).collect::<Vec<_>>(), stacks)?;
     let prefill_chunk = if cache.is_some() { CACHED_PREFILL_CHUNK } else { 512 };
     Ok(Deepseek41Model {
@@ -229,6 +238,7 @@ pub(super) fn model(l: &Loader<'_>, meta: &Value) -> Result<Deepseek41Model> {
         stats: lapid_nn::llm::expert_stats::StatsLog::from_env(),
         hash,
         layers,
+        dspark,
         cfg,
     })
 }

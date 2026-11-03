@@ -11,11 +11,14 @@
 //! logits = head(norm(collapse(pre, x)))                       (no hc_head)
 //! ```
 //! State ([`State`]): per layer the raw sliding window, per kv-source layer the compressor
-//! state and its rows, and the last `N - 1` compressed token ids for the Engram hashes; not
-//! rewindable. Tensor names follow the upstream checkpoint (see `convert.rs`).
+//! state and its rows, the recent compressed token ids for the Engram hashes and, with the
+//! DSpark draft loaded ([`dspark`]), the target features and the draft's window. A forward of
+//! at most [`REWIND_MAX`] tokens can be rewound ([`LmState::truncate`]: speculative decoding
+//! drops rejected tokens). Tensor names follow the upstream checkpoint (see `convert.rs`).
 
 pub(crate) mod attention;
 pub(crate) mod compress;
+pub(crate) mod dspark;
 pub(crate) mod index;
 mod load;
 pub(crate) mod moe;
@@ -55,15 +58,31 @@ struct Layer {
     moe: Moe,
 }
 
+/// Forwards of at most this many tokens keep what rewinding them needs (raw rows beyond the
+/// window, the compressor's open-group rows): a speculative verify of a draft block.
+pub(crate) const REWIND_MAX: usize = 16;
+/// Compressed token ids kept for the Engram hashes (`N - 1` are read; the rest lets a
+/// rewind restore them).
+const HISTORY_KEEP: usize = 64;
+
 /// Per-sequence state: committed per-layer states and Engram look-back, plus the ones staged
-/// by the last forward (`(layer, slot, tensor)` to realize).
+/// by the last forward (`(layer, slot, tensor)` to realize, then the target features).
 #[derive(Default)]
 pub struct State {
     layers: Vec<LayerState>,
+    /// Compress ratio per layer (rewinding the compressor state).
+    ratios: Vec<usize>,
     history: Vec<i64>,
     next: Option<(Vec<LayerState>, Vec<i64>)>,
     staged: Vec<(usize, usize, Tensor)>,
+    /// Target features of the last forward `[n, targets * D]` (DSpark loaded).
+    staged_feat: Option<Tensor>,
     pos: usize,
+    /// Tokens of the last forward that can still be rewound.
+    rewind: usize,
+    /// DSpark: target features of the latest positions not yet in the draft's window and
+    /// the draft's per-stage window ([`dspark`]).
+    pub(crate) draft: dspark::DraftState,
 }
 
 impl LmState for State {
@@ -72,14 +91,20 @@ impl LmState for State {
     }
 
     fn staged(&self) -> Vec<&Tensor> {
-        self.staged.iter().map(|(_, _, t)| t).collect()
+        let mut v: Vec<&Tensor> = self.staged.iter().map(|(_, _, t)| t).collect();
+        v.extend(self.staged_feat.as_ref());
+        v
     }
 
-    fn commit(&mut self, realized: Vec<Tensor>, n_tokens: usize) -> Result<()> {
+    fn commit(&mut self, mut realized: Vec<Tensor>, n_tokens: usize) -> Result<()> {
         let (mut next, history) = self.next.take().ok_or_else(|| Error::new("internal", "deepseek41: commit without a forward"))?;
-        if realized.len() != self.staged.len() {
+        if realized.len() != self.staged.len() + usize::from(self.staged_feat.is_some()) {
             self.discard();
             return Err(Error::new("backend", "deepseek41: wrong number of realized state tensors"));
+        }
+        if self.staged_feat.take().is_some() {
+            let feat = realized.pop().ok_or_else(|| Error::new("internal", "deepseek41: no features"))?;
+            self.draft.push_features(feat);
         }
         for ((i, j, _), t) in self.staged.drain(..).zip(realized) {
             if let Some(slot) = next[i].slots_mut().into_iter().nth(j) {
@@ -89,19 +114,49 @@ impl LmState for State {
         self.layers = next;
         self.history = history;
         self.pos += n_tokens;
+        self.rewind = if n_tokens <= REWIND_MAX { n_tokens } else { 0 };
         Ok(())
     }
 
     fn discard(&mut self) {
         self.next = None;
         self.staged.clear();
+        self.staged_feat = None;
     }
 
     fn clear(&mut self) {
         self.layers.iter_mut().for_each(|l| *l = LayerState::default());
         self.history.clear();
         self.discard();
+        self.draft = dspark::DraftState::default();
         self.pos = 0;
+        self.rewind = 0;
+    }
+
+    /// Within the last forward when it had at most [`REWIND_MAX`] tokens: the raw windows,
+    /// compressor rows / open groups, Engram look-back, target features and draft window.
+    fn truncate(&mut self, len: usize) -> bool {
+        let drop = self.pos.saturating_sub(len);
+        if len > self.pos || drop > self.rewind || self.next.is_some() {
+            return false;
+        }
+        if drop == 0 {
+            return true;
+        }
+        let mut layers = self.layers.clone();
+        for (l, &r) in layers.iter_mut().zip(&self.ratios) {
+            if !matches!(l.truncate(drop, len, r), Ok(true)) {
+                return false;
+            }
+        }
+        if self.draft.truncate(drop, len).is_err() {
+            return false;
+        }
+        self.layers = layers;
+        self.history.truncate(self.history.len().saturating_sub(drop));
+        self.pos = len;
+        self.rewind -= drop;
+        true
     }
 }
 
@@ -117,6 +172,8 @@ pub struct Deepseek41Model {
     device: Device,
     /// Held by a cached forward: one at a time uses the cache's slots.
     lock: std::sync::Mutex<()>,
+    /// The DSpark draft head (loaded with speculative decoding on).
+    dspark: Option<dspark::Dspark>,
     /// `LAPID_EXPERT_CACHE_STATS` log of the cache.
     stats: StatsLog,
     /// Prompt tokens per forward (larger with the cache: every chunk reads the union of its
@@ -171,6 +228,27 @@ impl Deepseek41Model {
         Ok(out)
     }
 
+    /// DSpark target feature of layer `i` (`None`: not a target / no draft): the mean of its
+    /// input streams `[n, D]` (after its Engram).
+    fn feature(&self, i: usize, x: &Tensor) -> Result<Option<Tensor>> {
+        match &self.dspark {
+            Some(d) if d.targets.contains(&i) => Ok(Some(x.mean(1, false)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// The target features `[n, targets * D]` of a forward (the rows the draft can still need).
+    fn features(&self, feats: Vec<Tensor>) -> Result<Option<Tensor>> {
+        let Some(d) = &self.dspark else { return Ok(None) };
+        if feats.is_empty() {
+            return Ok(None);
+        }
+        let f = Tensor::cat(&feats.iter().collect::<Vec<_>>(), 1)?;
+        let n = f.shape()[0];
+        let keep = d.feature_rows();
+        Ok(Some(if n > keep { f.slice(0, n - keep, n)? } else { f }))
+    }
+
     /// Streams after layer `i`'s Engram, given its gathered rows ([`engram_rows`](Self::engram_rows)).
     fn engram(e: &Engram, x: &Tensor, rows: Option<&Tensor>) -> Result<Tensor> {
         let rows = rows.ok_or_else(|| Error::new("internal", "deepseek41: engram layer without gathered rows"))?;
@@ -184,8 +262,10 @@ const PARALLEL_ROWS: usize = 1024;
 /// Threads gathering more rows (each one page fault at a time: the read queue depth).
 const GATHER_THREADS: usize = 32;
 
-/// Stage the layer states of a forward (the slots that changed) and the Engram look-back.
-fn stage(st: &mut State, next: Vec<LayerState>, ids: &[u32], hash: Option<&NgramHash>) {
+/// Stage the layer states of a forward (the slots that changed), the target features and
+/// the Engram look-back.
+fn stage(st: &mut State, next: Vec<LayerState>, ids: &[u32], hash: Option<&NgramHash>, feat: Option<Tensor>) {
+    st.staged_feat = feat;
     st.staged.clear();
     for (i, (old, new)) in st.layers.iter().zip(&next).enumerate() {
         for (j, (o, nw)) in old.slots().into_iter().zip(new.slots()).enumerate() {
@@ -196,7 +276,10 @@ fn stage(st: &mut State, next: Vec<LayerState>, ids: &[u32], hash: Option<&Ngram
             }
         }
     }
-    let history = hash.map_or_else(Vec::new, |h| h.next_history(&st.history, ids));
+    let history = hash.map_or_else(Vec::new, |h| {
+        let seq: Vec<i64> = st.history.iter().copied().chain(ids.iter().map(|&t| h.compress(t))).collect();
+        seq[seq.len().saturating_sub(HISTORY_KEEP)..].to_vec()
+    });
     st.next = Some((next, history));
 }
 
@@ -213,7 +296,18 @@ impl CausalLm for Deepseek41Model {
     }
 
     fn new_state(&self) -> State {
-        State { layers: vec![LayerState::default(); self.layers.len()], ..Default::default() }
+        State { layers: vec![LayerState::default(); self.layers.len()], ratios: self.cfg.compress_ratios.clone(), ..Default::default() }
+    }
+
+    fn can_draft(&self) -> bool {
+        self.dspark.is_some()
+    }
+
+    fn draft(&self, st: &mut State, anchor: u32, n_max: usize, p_min: f32) -> Result<Vec<u32>> {
+        match &self.dspark {
+            Some(d) => d.draft(self, st, anchor, n_max, p_min),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn end_of_turn(&self) -> &'static [&'static str] {
@@ -253,9 +347,13 @@ impl CausalLm for Deepseek41Model {
         let mut pre: Option<Tensor> = None;
         let mut shared = Shared::default();
         let mut next = Vec::with_capacity(self.layers.len());
+        let mut feats = Vec::new();
         for (i, layer) in self.layers.iter().enumerate() {
             if let Some(eg) = &layer.engram {
                 x = Self::engram(eg, &x, engram_rows[i].as_ref())?;
+            }
+            if let Some(f) = self.feature(i, &x)? {
+                feats.push(f);
             }
             let am = layer.attn_hc.mix(&x)?;
             let xa = match &pre {
@@ -276,7 +374,7 @@ impl CausalLm for Deepseek41Model {
                 taps.tap(format_args!("layers.{i}"), &x.reshape(&[n, hc * d])?);
             }
         }
-        stage(st, next, ids, self.hash.as_ref());
+        stage(st, next, ids, self.hash.as_ref(), self.features(feats)?);
         let pre = pre.ok_or_else(|| Error::new("internal", "deepseek41: no layers"))?;
         let (x, pre) = match rows {
             Rows::None => return Ok(None),
@@ -292,5 +390,7 @@ impl CausalLm for Deepseek41Model {
 }
 #[cfg(test)]
 mod bench_tests;
+#[cfg(test)]
+mod spec_tests;
 #[cfg(test)]
 mod steer_tests;

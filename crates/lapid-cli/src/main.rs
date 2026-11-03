@@ -39,6 +39,10 @@ enum Command {
         /// LFM3 and EmbeddingGemma; needs --dtype int4.
         #[arg(long)]
         calibrate: Option<String>,
+        /// DeepSeek V4.1: write only the DSpark draft head (`mtp.*`), for `--spec-draft-model`
+        /// with a model file converted without it (needs --out).
+        #[arg(long)]
+        dspark: bool,
     },
     /// Print metadata and the tensor table of a .lapid file as JSON.
     Info {
@@ -156,7 +160,13 @@ fn run(cli: Cli) -> Result<bool> {
             println!("best: {}", lapid::Device::best().description());
             Ok(true)
         }
-        Command::Convert { src, dtype, out, calibrate } => {
+        Command::Convert { src, dtype, out, calibrate: _, dspark: true } => {
+            let out = out.ok_or_else(|| lapid::Error::new("invalid_argument", "--dspark needs --out FILE"))?;
+            lapid_hub::deepseek41::convert::convert_dspark(&src, &dtype, &out)?;
+            println!("{}", out.display());
+            Ok(true)
+        }
+        Command::Convert { src, dtype, out, calibrate, dspark: false } => {
             let path = lapid_hub::cmd::convert_with(&src, &dtype, out.as_deref(), calibrate.as_deref())?;
             println!("{}", path.display());
             Ok(true)

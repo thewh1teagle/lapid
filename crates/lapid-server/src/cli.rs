@@ -120,12 +120,49 @@ pub struct LoadArgs {
     /// Server requests choose with `"steer": {"name": scale}`.
     #[arg(long = "steer", value_name = "FILE[:SCALE]")]
     pub steer: Vec<String>,
+    /// Speculative decoding (llama.cpp `--spec-type`): `draft-dspark` uses the model's
+    /// built-in DSpark draft head (DeepSeek V4.1). Off by default.
+    #[arg(long = "spec-type", value_name = "TYPE")]
+    pub spec_type: Option<String>,
+    /// `--draft dspark`: same as `--spec-type draft-dspark`.
+    #[arg(long = "draft", value_name = "KIND")]
+    pub draft: Option<String>,
+    /// Draft tokens per step at most (clamped to the draft's block size).
+    #[arg(long = "spec-draft-n-max", visible_alias = "draft-max", value_name = "N")]
+    pub spec_draft_n_max: Option<usize>,
+    /// Cut the draft at the first position whose confidence is below P (0 = off).
+    #[arg(long = "spec-draft-p-min", visible_alias = "draft-p-min", value_name = "P")]
+    pub spec_draft_p_min: Option<f32>,
+    /// Draft head weights (`lapid convert --dspark`) when the model file has none.
+    #[arg(long = "spec-draft-model", visible_alias = "model-draft", value_name = "FILE")]
+    pub spec_draft_model: Option<std::path::PathBuf>,
 }
 
 impl LoadArgs {
     pub fn options(&self, sampling: &SamplingArgs) -> Result<LoadOptions> {
         let steer = self.steer.iter().map(|s| SteerSpec::parse(s)).collect::<Result<_>>()?;
         Ok(LoadOptions { dtype: self.dtype.clone(), sessions: self.sessions, defaults: sampling.params(), steer })
+    }
+
+    /// Speculative decoding settings of the flags (`None`: off).
+    pub fn spec(&self) -> Result<Option<lapid_hub::runtime::spec::SpecConfig>> {
+        let kind = match (self.spec_type.as_deref(), self.draft.as_deref()) {
+            (Some("draft-dspark") | None, Some("dspark")) | (Some("draft-dspark"), None) => true,
+            (None | Some("none"), None) => false,
+            (t, d) => return Err(Error::new("invalid_argument", format!("unsupported speculative decoding {:?} (only --spec-type draft-dspark / --draft dspark)", t.or(d).unwrap_or_default()))),
+        };
+        if !kind {
+            return Ok(None);
+        }
+        let mut c = lapid_hub::runtime::spec::SpecConfig::default();
+        if let Some(n) = self.spec_draft_n_max {
+            c.n_max = n;
+        }
+        if let Some(p) = self.spec_draft_p_min {
+            c.p_min = p;
+        }
+        c.draft_model = self.spec_draft_model.clone();
+        Ok(Some(c))
     }
 
     /// Apply process-wide settings (threads, weight residency) and print notes on ignored flags.
@@ -228,6 +265,7 @@ pub struct RunArgs {
 
 pub fn serve(a: ServeArgs) -> Result<()> {
     a.load.apply();
+    lapid_hub::runtime::spec::set_spec(a.load.spec()?);
     let mut models = a.load.sources(&a.models, &a.model)?;
     if let (Some(alias), Some(first)) = (&a.alias, models.first_mut()) {
         *first = format!("{alias}={first}");
@@ -243,6 +281,7 @@ pub fn serve(a: ServeArgs) -> Result<()> {
 
 pub fn run(a: RunArgs) -> Result<()> {
     a.load.apply();
+    lapid_hub::runtime::spec::set_spec(a.load.spec()?);
     let mut positional = a.args.clone();
     let explicit = a.model.iter().cloned().collect::<Vec<_>>();
     let model = if !explicit.is_empty() || !a.load.hf_repo.is_empty() {
