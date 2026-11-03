@@ -3,7 +3,7 @@
 use lapid_quant::{Format, GROUP, layout};
 use lapid_tensor::{DType, Error, Result};
 
-use crate::kquant::{self, KMat, QK};
+use crate::kquant::{self, KMat};
 use crate::typed::f16_bits_to_f32;
 
 /// Borrowed quantized `[rows, cols]` matrix.
@@ -25,6 +25,7 @@ pub(crate) fn format_of(dtype: DType) -> Option<Format> {
         DType::Q4K => Some(Format::Q4K),
         DType::Q5K => Some(Format::Q5K),
         DType::Q6K => Some(Format::Q6K),
+        DType::Mxfp4 => Some(Format::Mxfp4),
         _ => None,
     }
 }
@@ -54,7 +55,7 @@ impl<'a> QMat<'a> {
         Ok(QMat { fmt, rows, cols, qs, scales })
     }
 
-    /// AoS ggml K-quant matrix (no SoA scales plane).
+    /// AoS ggml block matrix: K-quants or MXFP4 (no SoA scales plane).
     #[inline(always)]
     pub fn is_k(&self) -> bool {
         self.fmt.is_aos()
@@ -112,7 +113,7 @@ impl<'a> QMat<'a> {
     pub fn dequant_row(&self, row: usize, out: &mut [f32]) {
         if self.is_k() {
             let km = self.kmat();
-            for (b, o) in out.chunks_exact_mut(QK).enumerate() {
+            for (b, o) in out.chunks_exact_mut(self.fmt.block_elems()).enumerate() {
                 kquant::dequant_block(self.fmt, km.block(row, b), o);
             }
             return;

@@ -392,6 +392,15 @@ pub fn check_plain(d: DType, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Quantized weight dtypes the WGSL kernels implement: MXFP4 is not (CPU and CUDA only), and
+/// is rejected at plan time instead of producing a shader without its loaders.
+pub fn check_quant_supported(d: DType, what: &str) -> Result<()> {
+    if d == DType::Mxfp4 {
+        return Err(Error::new("unsupported_dtype", format!("{what}: {} is not supported by the WGSL backends", d.name())));
+    }
+    Ok(())
+}
+
 pub fn bad(msg: impl Into<String>) -> Error {
     Error::new("bad_launch", msg)
 }

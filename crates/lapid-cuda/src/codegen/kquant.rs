@@ -178,7 +178,7 @@ pub(crate) fn load_elem(g: &mut Gen, d: DType, ptr: &str, e: &str, dst: &str) {
 
 /// A[%arow + kx + off + t] for t in 0..len into fresh f32 registers (`vec`: f32 A whose
 /// row start and `kx + off` are aligned to `len` elements → one vector load).
-fn a_run(g: &mut Gen, spec: &MatMulSpec, vec: bool, kx: &str, off: usize, len: usize) -> Vec<String> {
+pub(crate) fn a_run(g: &mut Gen, spec: &MatMulSpec, vec: bool, kx: &str, off: usize, len: usize) -> Vec<String> {
     let v: Vec<String> = (0..len).map(|_| g.reg("f32")).collect();
     let idx = g.reg("u32");
     g.op(format!("add.u32 {idx}, %arow, {kx}"));

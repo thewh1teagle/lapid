@@ -2,7 +2,7 @@
 //!
 //! Exact on the dequantized weights (~1e-5 relative, no int8 activation blocks): every
 //! supported weight format is `w = s[g] * q - mn[g]` with small integer quants `q` (int8,
-//! int4 - 8, q4_K 0..15, q5_K 0..31, q6_K -32..31), which are exact bf16 values. So:
+//! int4 - 8, q4_K 0..15, q5_K 0..31, q6_K -32..31, MXFP4 2*e2m1 in -12..12), which are exact bf16 values. So:
 //! * B holds the integer quants as bf16, with an f32 scale per scale group (32 elements; 16
 //!   for q6_K) applied after the group's products, and for q4_K / q5_K the min term
 //!   `mn[g] * sum(a over g)` subtracted with f32 activation group sums;
@@ -124,6 +124,15 @@ mod imp {
             return;
         }
         let km = b.kmat();
+        if b.fmt == Format::Mxfp4 {
+            // KV[q] in -12..12, scale d per 32-group, no min.
+            let mut g8 = [0i8; GROUP];
+            for g in 0..b.groups() {
+                s[g] = crate::mxfp4::unpack_block(km.block(row, g), &mut g8);
+                q[g * GROUP..(g + 1) * GROUP].copy_from_slice(&g8);
+            }
+            return;
+        }
         for blk in 0..b.cols / QK {
             let bb = km.block(row, blk);
             // SAFETY: `bb` is a whole block of `b.fmt`; stores stay inside `q[blk*256..+256]`.

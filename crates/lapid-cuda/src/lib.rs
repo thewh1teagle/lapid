@@ -39,6 +39,8 @@ mod matmul_attn_tests;
 mod memory;
 mod module;
 #[cfg(test)]
+mod mxfp4_tests;
+#[cfg(test)]
 mod r5_tests;
 #[cfg(test)]
 mod tests;

@@ -6,7 +6,7 @@ use lapid_compiler::{GatherAxisDims, GatherAxisSpec, GatherDims, GatherSpec};
 use lapid_tensor::{DType, Error, Result};
 
 use super::{common, template};
-use super::{Key, Params, Plan, bad, check_plain, grid_threads};
+use super::{Key, Params, Plan, bad, check_plain, check_quant_supported, grid_threads};
 use crate::Caps;
 
 const KERNEL: &str = include_str!("kernels/gather.wgsl");
@@ -27,6 +27,7 @@ pub(super) fn plan(spec: &Arc<GatherSpec>, d: &GatherDims, caps: &Caps) -> Resul
 /// see `split`): indices outside the part are skipped, outside the table flagged.
 pub(super) fn plan_part(spec: &Arc<GatherSpec>, d: &GatherDims, base: usize, all_rows: usize, caps: &Caps) -> Result<Plan> {
     check_plain(spec.out_dtype, "gather output")?;
+    check_quant_supported(spec.table_dtype, "gather table")?;
     if let Some(f) = spec.table_dtype.quant_format()
         && !d.cols.is_multiple_of(f.block_elems())
     {

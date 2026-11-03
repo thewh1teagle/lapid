@@ -93,9 +93,14 @@ fn quantized_large_m_matches_dequantized_f32() {
 fn kquant_matmul_matches_dequantized_f32() {
     let bes = [CpuBackend::with_threads(4), CpuBackend::build(1, Isa::default())];
     let mut seed = 50;
-    for fmt in [Format::Q4K, Format::Q5K, Format::Q6K] {
+    for fmt in [Format::Q4K, Format::Q5K, Format::Q6K, Format::Mxfp4] {
         let dt = super::kbench_tests::dtype(fmt);
-        for &(m, n, k, pad) in &[(1, 37, 512, 0), (3, 20, 256, 4), (6, 9, 256, 0), (20, 45, 256, 3), (130, 70, 512, 0), (33, 300, 1024, 0)] {
+        let mut shapes = vec![(1, 37, 512, 0), (3, 20, 256, 4), (6, 9, 256, 0), (20, 45, 256, 3), (130, 70, 512, 0), (33, 300, 1024, 0)];
+        if fmt == Format::Mxfp4 {
+            // 32-element blocks: k need not be a multiple of 256.
+            shapes.extend([(1, 11, 96, 0), (5, 7, 224, 2), (40, 13, 160, 1)]);
+        }
+        for &(m, n, k, pad) in &shapes {
             seed += 1;
             let w = rnd(n * k, seed);
             let bytes = lapid_quant::quantize(fmt, &w, n, k);

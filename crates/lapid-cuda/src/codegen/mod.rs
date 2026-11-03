@@ -16,6 +16,7 @@ mod gdn;
 mod gemv;
 mod index;
 mod kquant;
+mod mxfp4;
 mod matmul;
 mod mma;
 mod moe;

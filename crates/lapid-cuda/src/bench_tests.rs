@@ -277,7 +277,7 @@ fn cases() -> Vec<Case> {
         v.push(matmul_case(3, 768, 768, b, Some(add01())));
     }
     // LFM3-1.7B decode GEMVs (hidden 2048, ffn 7680, conv in_proj 6144, kv 512, vocab)
-    for b in [DType::Int4, DType::Int8, DType::F16, DType::Q4K, DType::Q6K] {
+    for b in [DType::Int4, DType::Int8, DType::F16, DType::Q4K, DType::Q6K, DType::Mxfp4] {
         for (n, k) in [(2048, 2048), (512, 2048), (6144, 2048), (7680, 2048), (2048, 7680), (128000, 2048)] {
             let mut c = matmul_case(1, n, k, b, None);
             c.name = format!("lfm3 {}", c.name);
@@ -293,6 +293,21 @@ fn cases() -> Vec<Case> {
         v.push(moe_case(1, 8, 256, 512, 2048, w));
         v.push(moe_case(1, 8, 256, 2048, 512, w));
         v.push(moe_case(512, 8, 256, 512, 2048, w));
+    }
+    // DeepSeek-V4-Flash-like MoE (32 of its 256 experts to bound the cold copies, top-6, hidden 4096, expert ffn 2048) and
+    // decode GEMVs: MXFP4 vs Q4K
+    for w in [DType::Mxfp4, DType::Q4K] {
+        v.push(moe_case(1, 6, 32, 2048, 4096, w));
+        v.push(moe_case(1, 6, 32, 4096, 2048, w));
+        v.push(moe_case(512, 6, 32, 2048, 4096, w));
+        for (n, k) in [(4096, 4096), (2048, 4096), (4096, 2048)] {
+            let mut c = matmul_case(1, n, k, w, None);
+            c.name = format!("ds4 {}", c.name);
+            v.push(c);
+        }
+        let mut c = matmul_case(512, 4096, 4096, w, None);
+        c.name = format!("ds4 {}", c.name);
+        v.push(c);
     }
     // Qwen3.5-0.8B prefill GEMMs (m = 512)
     for b in [DType::Q4K, DType::Q6K, DType::Int8, DType::F16] {
