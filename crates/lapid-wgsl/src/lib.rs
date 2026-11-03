@@ -291,6 +291,8 @@ pub fn plan(kernel: &Kernel, caps: &Caps) -> Result<Plan> {
         Kernel::MatMulId(s, d) => moe::plan(s, d, caps),
         Kernel::GatedDeltaNet(s, d) => delta::plan(s, d, caps),
         Kernel::RmsNorm(s, d) => rows::plan_rms_norm(s, d, caps),
+        // opt-in kernel (`CompileOptions::native_sinkhorn`): never lowered for this backend
+        Kernel::Sinkhorn(_) => Err(Error::new("unsupported", "wgsl: no native sinkhorn kernel")),
     }
 }
 

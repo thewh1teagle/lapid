@@ -172,13 +172,7 @@ impl SinkhornHc {
         let pre = ops::sigmoid(&part(0, 0, hc)?)?.add_scalar(eps)?; // [n, hc]
         let post = ops::sigmoid(&part(1, hc, 2 * hc)?)?.mul_scalar(2.0)?;
         // comb[n, src, dst]: softmax over dst, then Sinkhorn (column = over src, row = over dst).
-        let mut comb = part(2, 2 * hc, 2 * hc + hc * hc)?.reshape(&[n, hc, hc])?.softmax()?.add_scalar(eps)?;
-        let norm_src = |c: &Tensor| -> Result<Tensor> { c.div(&c.sum(1, true)?.add_scalar(eps)?) };
-        let norm_dst = |c: &Tensor| -> Result<Tensor> { c.div(&c.sum(2, true)?.add_scalar(eps)?) };
-        comb = norm_src(&comb)?;
-        for _ in 1..self.iters {
-            comb = norm_src(&norm_dst(&comb)?)?;
-        }
+        let comb = part(2, 2 * hc, 2 * hc + hc * hc)?.reshape(&[n, hc, hc])?.sinkhorn(self.iters, self.eps)?;
         Ok(HcMix { pre, post, comb })
     }
 

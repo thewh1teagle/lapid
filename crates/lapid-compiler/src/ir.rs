@@ -408,6 +408,18 @@ pub enum Kernel {
     /// Round 5. inputs=[x [rows, cols], weight [cols]] contiguous → out [rows, cols] =
     /// x * rsqrt(mean(x^2) + eps) * weight (f32 math). Spec/dims as LayerNorm.
     RmsNorm(Arc<LayerNormSpec>, LayerNormDims),
+    /// Round 6 (opt-in, `CompileOptions::native_sinkhorn`). inputs=[x f32 contiguous
+    /// [count, n, n]] -> out f32 [count, n, n]: `Op::Sinkhorn` of every matrix.
+    Sinkhorn(SinkhornDims),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SinkhornDims {
+    pub count: usize,
+    pub n: usize,
+    pub iters: usize,
+    /// f32 bits
+    pub eps: u32,
 }
 
 // ---------------------------------------------------------------- round 3
@@ -463,6 +475,7 @@ impl Kernel {
             Kernel::Attention(..) => "attention",
             Kernel::GatherAxis(..) => "gather_axis",
             Kernel::TopK(..) => "topk",
+            Kernel::Sinkhorn(..) => "sinkhorn",
         }
     }
 }

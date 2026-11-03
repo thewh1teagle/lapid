@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use lapid_compiler::{Backend, BufferSource, CompileOptions};
+use lapid_compiler::{Backend, BufferSource};
 use lapid_tensor::{DType, DeviceData, Error, Op, Result, Tensor, bail};
 
 mod cache;
@@ -167,7 +167,7 @@ impl Runtime {
             Some((p, _)) => p,
             None => {
                 let owned: Vec<Tensor> = outputs.iter().map(|t| (*t).clone()).collect();
-                let schedule = lapid_compiler::compile(&owned, &CompileOptions::default())?;
+                let schedule = lapid_compiler::compile(&owned, &self.backend.compile_options())?;
                 if debug {
                     crate::log::emit(&format!(
                         "[lapid] {}: compiled {} launches, {} buffers, {} temp slots in {:.3} ms\n{}",

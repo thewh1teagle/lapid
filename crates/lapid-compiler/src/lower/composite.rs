@@ -8,7 +8,7 @@ use lapid_tensor::{DType, Op, Result, Tensor};
 use super::lexpr::LExpr;
 use super::{Lowerer, internal, op_name, src_of, view};
 use crate::ir::{
-    AttentionDims, AttentionSpec, BufId, Kernel, LayerNormDims, LayerNormSpec, RowDims, SoftmaxSpec, View,
+    AttentionDims, AttentionSpec, BufId, Kernel, LayerNormDims, LayerNormSpec, RowDims, SinkhornDims, SoftmaxSpec, View,
 };
 
 /// Emit `Kernel::RmsNorm` (every backend has it; `LAPID_RMS_NORM=0` falls back to the
@@ -17,6 +17,9 @@ fn native_rms_norm_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("LAPID_RMS_NORM").map_or(true, |v| v.trim() != "0"))
 }
+
+/// Largest matrix side of a native `Kernel::Sinkhorn` (larger ones are decomposed).
+const SINKHORN_MAX_N: usize = 8;
 
 impl Lowerer {
     pub(super) fn lower_composite(&mut self, t: &Tensor) -> Result<LExpr> {
@@ -30,6 +33,7 @@ impl Lowerer {
                 Op::Attention { scale, causal, has_mask } => self.native_attention(t, *scale, *causal, *has_mask)?,
                 Op::MatMulId => self.native_matmul_id(t)?,
                 Op::GatedDeltaNet { scale } => self.native_gated_delta_net(t, *scale)?,
+                Op::Sinkhorn { iters, eps } if self.opts.native_sinkhorn => self.native_sinkhorn(t, *iters, *eps)?,
                 _ => None,
             };
             if let Some(v) = native {
@@ -68,6 +72,23 @@ impl Lowerer {
             self.lower_node(n)?;
         }
         self.val(root)
+    }
+
+    fn native_sinkhorn(&mut self, t: &Tensor, iters: usize, eps: f32) -> Result<Option<LExpr>> {
+        let x = src_of(t, 0)?;
+        let r = x.rank();
+        let n = x.shape().get(r.wrapping_sub(1)).copied().unwrap_or(0);
+        if r < 2 || x.dtype() != DType::F32 || t.shape() != x.shape() || n > SINKHORN_MAX_N {
+            return Ok(None);
+        }
+        let count = view::numel(&x.shape()[..r - 2]);
+        let e = self.val(x)?;
+        let (xb, _) = self.float_contig(&e, x.shape(), DType::F32)?;
+        let out = self.alloc_node(t)?;
+        if count * n > 0 {
+            self.push(Kernel::Sinkhorn(SinkhornDims { count, n, iters, eps: eps.to_bits() }), vec![xb], out);
+        }
+        Ok(Some(LExpr::buf(out, DType::F32, View::contiguous(t.shape()))))
     }
 
     /// Row softmax over the last axis of a row-major input.

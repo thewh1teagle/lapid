@@ -145,6 +145,13 @@ pub enum Op {
     /// RMS norm over the last axis: srcs = [x, weight [D]];
     /// out = x * rsqrt(mean(x^2) + eps) * weight (f32 math, x's dtype).
     RmsNorm { eps: f32 },
+
+    // ---- round 6 ----
+    /// Sinkhorn normalization of square matrices (DeepSeek mHC `comb`): src = x [..., n, n]
+    /// f32 logits -> f32 [..., n, n]. Per matrix: `c = softmax(x) + eps` (over the last
+    /// axis), `c = c / (sum_rows(c) + eps)` (each column over the second-to-last axis), then
+    /// `iters - 1` times: `c = c / (sum_cols(c) + eps)` (each row), `c = c / (sum_rows(c) + eps)`.
+    Sinkhorn { iters: usize, eps: f32 },
 }
 
 impl Op {

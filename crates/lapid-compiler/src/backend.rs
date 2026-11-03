@@ -2,6 +2,7 @@
 
 use lapid_tensor::{DeviceData, HostData, Result};
 
+use crate::CompileOptions;
 use crate::ir::Launch;
 
 pub trait Backend: Send + Sync {
@@ -9,6 +10,10 @@ pub trait Backend: Send + Sync {
     fn name(&self) -> &'static str;
     /// Human readable, e.g. "NVIDIA GB10" / "cpu (20 threads, neon+dotprod)".
     fn device_name(&self) -> String;
+    /// Options the runtime compiles this backend's graphs with (opt-in kernels).
+    fn compile_options(&self) -> CompileOptions {
+        CompileOptions::default()
+    }
     /// Allocate uninitialized device memory.
     fn alloc(&self, bytes: usize) -> Result<DeviceData>;
     /// Allocate and fill.

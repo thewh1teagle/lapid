@@ -16,7 +16,7 @@ fn run(outs: &[Tensor]) -> Schedule {
 }
 
 fn run_with(outs: &[Tensor], fuse: bool, native: bool) -> Schedule {
-    compile(outs, &CompileOptions { fuse, native_composites: native }).unwrap()
+    compile(outs, &CompileOptions { fuse, native_composites: native, native_sinkhorn: false }).unwrap()
 }
 
 fn kinds(s: &Schedule) -> Vec<&'static str> {

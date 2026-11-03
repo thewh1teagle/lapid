@@ -183,24 +183,27 @@ fn attention_case(sq: usize, sk: usize, encoder: bool, dt: DType, d: usize) -> C
 }
 
 fn layer_norm_case(rows: usize) -> Case {
+    rms_norm_case(rows, 768, false)
+}
+
+/// Layer norm (or RMS norm) of `rows` x `cols`.
+fn rms_norm_case(rows: usize, cols: usize, rms: bool) -> Case {
     let spec = Arc::new(LayerNormSpec {
         in_dtype: DType::F32,
         param_dtype: DType::F32,
         out_dtype: DType::F32,
     });
-    let dims = LayerNormDims {
-        rows,
-        cols: 768,
-        eps: 1e-5f32.to_bits(),
+    let dims = LayerNormDims { rows, cols, eps: 1e-5f32.to_bits() };
+    let (rc, c) = (rows * cols * 4, cols * 4);
+    let (kernel, sizes, inputs) = if rms {
+        (Kernel::RmsNorm(spec, dims), vec![rc, c, rc], vec![0, 1])
+    } else {
+        (Kernel::LayerNorm(spec, dims), vec![rc, c, c, rc], vec![0, 1, 2])
     };
-    let sizes = vec![rows * 768 * 4, 768 * 4, 768 * 4, rows * 768 * 4];
+    let output = inputs.len();
     Case {
-        name: format!("layer_norm {rows}x768"),
-        launch: Launch {
-            kernel: Kernel::LayerNorm(spec, dims),
-            inputs: vec![0, 1, 2],
-            output: 3,
-        },
+        name: format!("{} {rows}x{cols}", if rms { "rms_norm" } else { "layer_norm" }),
+        launch: Launch { kernel, inputs, output },
         cold: vec![],
         init: vec![],
         flops: 0.0,
@@ -307,6 +310,36 @@ fn cases() -> Vec<Case> {
         }
         let mut c = matmul_case(512, 4096, 4096, w, None);
         c.name = format!("ds4 {}", c.name);
+        v.push(c);
+    }
+    // DeepSeek-V4.1-Flash decode: int8 dense linears (wq_b, wo_b, shared expert, wq_a, wkv),
+    // MXFP4 routed experts (32 of 384 to bound the cold copies)
+    for (n, k) in [(32768, 1280), (5120, 8192), (2304, 5120), (5120, 2304), (1280, 5120), (512, 5120)] {
+        let mut c = matmul_case(1, n, k, DType::Int8, None);
+        c.name = format!("ds41 {}", c.name);
+        v.push(c);
+    }
+    for (t, r, e, n, k, w) in [(1, 6, 32, 2304, 5120, DType::Mxfp4), (1, 6, 32, 5120, 2304, DType::Mxfp4), (1, 8, 8, 1024, 4096, DType::Int8)] {
+        let mut c = moe_case(t, r, e, n, k, w);
+        c.name = format!("ds41 {}", c.name);
+        v.push(c);
+    }
+    v.push(copy_case(256 << 20));
+    for count in [1, 2048] {
+        let d = SinkhornDims { count, n: 4, iters: 20, eps: 1e-6f32.to_bits() };
+        v.push(Case {
+            name: format!("ds41 sinkhorn {count}x4x4"),
+            launch: Launch { kernel: Kernel::Sinkhorn(d), inputs: vec![0], output: 1 },
+            cold: vec![],
+            init: vec![],
+            flops: 0.0,
+            bytes: (count * 128) as f64,
+            sizes: vec![count * 64; 2],
+        });
+    }
+    for (rows, cols) in [(1, 20480), (1, 5120), (1, 1280)] {
+        let mut c = rms_norm_case(rows, cols, true);
+        c.name = format!("ds41 {}", c.name);
         v.push(c);
     }
     // Qwen3.5-0.8B prefill GEMMs (m = 512)

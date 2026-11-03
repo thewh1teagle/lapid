@@ -214,6 +214,14 @@ fn launch_line(l: &Launch) -> String {
             d.k,
             fmt_ins(&l.inputs, None)
         ),
+        Kernel::Sinkhorn(d) => format!(
+            "sinkhorn count={} n={} iters={} eps={} in={} out=b{out}",
+            d.count,
+            d.n,
+            d.iters,
+            f32::from_bits(d.eps),
+            fmt_ins(&l.inputs, None)
+        ),
         Kernel::GatedDeltaNet(s, d) => format!(
             "gated_delta_net -> {} b={} t={} h={} dk={} dv={} scale={} in={} out=b{out}",
             s.out_dtype.name(),

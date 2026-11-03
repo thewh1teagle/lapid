@@ -419,6 +419,11 @@ impl Tensor {
     pub fn rms_norm(&self, weight: &Tensor, eps: f32) -> Result<Tensor> {
         self.rms_norm_impl(weight, eps)
     }
+    /// Sinkhorn normalization of the trailing `[n, n]` matrices of f32 logits (see
+    /// `Op::Sinkhorn`).
+    pub fn sinkhorn(&self, iters: usize, eps: f32) -> Result<Tensor> {
+        self.sinkhorn_impl(iters, eps)
+    }
     /// q [B,H,Sq,D], k/v [B,H,Sk,D]; mask optional additive.
     pub fn attention(
         q: &Tensor,

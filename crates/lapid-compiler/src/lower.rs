@@ -171,6 +171,7 @@ fn materializes_operands(op: &Op) -> bool {
             | Op::RmsNorm { .. }
             | Op::Attention { .. }
             | Op::GatedDeltaNet { .. }
+            | Op::Sinkhorn { .. }
             | Op::Gather
             | Op::GatherAxis { .. }
             | Op::TopK { .. }
@@ -206,6 +207,7 @@ pub(crate) fn op_name(op: &Op) -> &'static str {
         Op::WriteSlice { .. } => "write_slice",
         Op::MatMulId => "matmul_id",
         Op::GatedDeltaNet { .. } => "gated_delta_net",
+        Op::Sinkhorn { .. } => "sinkhorn",
     }
 }
 
@@ -291,7 +293,8 @@ impl Lowerer {
             | Op::RmsNorm { .. }
             | Op::Attention { .. }
             | Op::MatMulId
-            | Op::GatedDeltaNet { .. } => {
+            | Op::GatedDeltaNet { .. }
+            | Op::Sinkhorn { .. } => {
                 self.lower_composite(t)?
             }
         };

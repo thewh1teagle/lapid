@@ -18,11 +18,14 @@ pub struct CompileOptions {
     pub fuse: bool,
     /// Emit Softmax/LayerNorm/Attention kernels instead of decomposing them.
     pub native_composites: bool,
+    /// Emit `Kernel::Sinkhorn` for matrices up to 8 x 8 (backends that have it, see
+    /// `Backend::compile_options`) instead of its decomposition (~1 launch per step).
+    pub native_sinkhorn: bool,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        CompileOptions { fuse: true, native_composites: true }
+        CompileOptions { fuse: true, native_composites: true, native_sinkhorn: false }
     }
 }
 

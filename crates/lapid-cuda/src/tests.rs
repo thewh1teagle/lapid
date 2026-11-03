@@ -370,11 +370,16 @@ fn all_keys() -> Vec<Key> {
         in_dtype: DType::F16,
         out_dtype: DType::F32,
     })));
+    keys.push(Key::Sinkhorn(4));
+    keys.push(Key::Sinkhorn(8));
     for rms in [false, true] {
-        keys.push(Key::LayerNorm(
-            Arc::new(LayerNormSpec { in_dtype: DType::F32, param_dtype: DType::F32, out_dtype: DType::F16 }),
-            rms,
-        ));
+        for wide in [false, true] {
+            keys.push(Key::LayerNorm(
+                Arc::new(LayerNormSpec { in_dtype: DType::F32, param_dtype: DType::F32, out_dtype: DType::F16 }),
+                rms,
+                wide,
+            ));
+        }
     }
     for causal in [false, true] {
         for mask in [None, Some(DType::F32)] {

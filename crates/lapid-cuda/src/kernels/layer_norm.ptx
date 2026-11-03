@@ -1,15 +1,16 @@
-// Layer norm over rows, one 256-thread block per row (two-pass mean / variance; the row
-// is re-read per pass, which hits L1 for model-sized rows).
+// Layer norm over rows, one block of {{NT}} threads per row (256, or 1024 for few long rows;
+// two-pass mean / variance; the row is re-read per pass, which hits L1 for model-sized
+// rows). Every loop step covers 4 * NT elements with all loads issued before the math.
 // Params: [rows, cols, eps_bits]. Flag RMS: RMS norm (no mean, no bias): x * rsqrt(mean(x^2) + eps) * w.
-.shared .align 16 .f32 red[8];
+.shared .align 16 .f32 red[32];
 
 .visible .entry lapid_main(
 {{ARGS}}
 )
 {
     .reg .pred %p;
-    .reg .b32 %row, %cols, %base, %j, %idx, %tx, %lane, %warp;
-    .reg .f32 %x, %w, %b, %sum, %sq, %mean, %rstd, %eps, %fcols, %d, %y;
+    .reg .b32 %row, %cols, %base, %j, %tx, %lane, %warp;
+    .reg .f32 %sum, %sq, %mean, %rstd, %eps, %fcols;
 {{PTRS}}
     mov.u32 %tx, %tid.x;
     and.b32 %lane, %tx, 31;
@@ -21,33 +22,26 @@
     mul.lo.u32 %base, %row, %cols;
 
     mov.f32 %sum, 0f00000000;
-    mov.u32 %j, %tx;
-// #if RMS
     mov.f32 %mean, 0f00000000;
-    bra MEAN_SKIP;
-// #endif
+    mov.u32 %j, %tx;
+// #if !RMS
 MEAN_LOOP:
     setp.ge.u32 %p, %j, %cols;
     @%p bra MEAN_DONE;
-    add.u32 %idx, %base, %j;
-{{LOAD_X}}
-    add.f32 %sum, %sum, %x;
-    add.u32 %j, %j, 256;
+{{SUM4}}
+    add.u32 %j, %j, {{STEP}};
     bra MEAN_LOOP;
 MEAN_DONE:
 {{REDUCE_SUM}}
     div.rn.f32 %mean, %sum, %fcols;
-MEAN_SKIP:
+// #endif
     mov.f32 %sq, 0f00000000;
     mov.u32 %j, %tx;
 VAR_LOOP:
     setp.ge.u32 %p, %j, %cols;
     @%p bra VAR_DONE;
-    add.u32 %idx, %base, %j;
-{{LOAD_X}}
-    sub.f32 %d, %x, %mean;
-    fma.rn.f32 %sq, %d, %d, %sq;
-    add.u32 %j, %j, 256;
+{{SQ4}}
+    add.u32 %j, %j, {{STEP}};
     bra VAR_LOOP;
 VAR_DONE:
 {{REDUCE_SQ}}
@@ -59,20 +53,8 @@ VAR_DONE:
 OUT_LOOP:
     setp.ge.u32 %p, %j, %cols;
     @%p bra DONE;
-    add.u32 %idx, %base, %j;
-{{LOAD_X}}
-{{LOAD_WB}}
-// #if RMS
-    mul.f32 %d, %x, %rstd;
-    mul.f32 %y, %d, %w;
-// #endif
-// #if !RMS
-    sub.f32 %d, %x, %mean;
-    mul.f32 %d, %d, %rstd;
-    fma.rn.f32 %y, %d, %w, %b;
-// #endif
-{{STORE}}
-    add.u32 %j, %j, 256;
+{{OUT4}}
+    add.u32 %j, %j, {{STEP}};
     bra OUT_LOOP;
 DONE:
     ret;

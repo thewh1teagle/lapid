@@ -14,7 +14,7 @@
 //! - `LAPID_DEBUG=1` writes every kernel to `$LAPID_KERNEL_DIR` (default `<tmp>/lapid-kernels`)
 //!   and prints the JIT info log; JIT errors always carry the log and numbered source.
 //! - `LAPID_PROFILE=1` times every launch with events and prints per-kernel totals when the
-//!   backend is dropped (`CudaBackend::profile_report`).
+//!   backend is dropped (`=2`: per kernel and launch shape). See `CudaBackend::profile_report`.
 //! - `LAPID_CUDA_NO_MMA=1` forces the scalar (non-tensor-core) kernels (testing).
 //! - `LAPID_CUDA_FAST_ATTENTION=1` rounds f32 q/k/v to f16 in the tensor-core flash attention
 //!   (default: hi/lo f16 splits, ~f32 accuracy, about 2.5x the attention time).
@@ -180,6 +180,10 @@ impl Backend for CudaBackend {
 
     fn device_name(&self) -> String {
         self.ctx.name.clone()
+    }
+
+    fn compile_options(&self) -> lapid_compiler::CompileOptions {
+        lapid_compiler::CompileOptions { native_sinkhorn: true, ..Default::default() }
     }
 
     fn alloc(&self, bytes: usize) -> Result<DeviceData> {

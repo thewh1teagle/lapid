@@ -12,7 +12,7 @@ use crate::tests::{bytes, check, compare, cuda, floats, rnd, run_on};
 #[test]
 fn rms_norm_matches_cpu() {
     let Some(be) = cuda() else { return };
-    for &(rows, cols) in &[(1usize, 1024usize), (7, 2048), (33, 100), (5, 5120), (512, 256)] {
+    for &(rows, cols) in &[(1usize, 1024usize), (7, 2048), (33, 100), (5, 5120), (512, 256), (1, 20481), (64, 4096)] {
         for (xt, wt) in [(DType::F32, DType::F32), (DType::F16, DType::F32), (DType::F32, DType::BF16)] {
             let x = rnd(rows * cols, 21);
             let w = rnd(cols, 22);
@@ -34,6 +34,45 @@ fn rms_norm_matches_cpu() {
             }
             check("rms_norm vs f64", &got, &want, 1e-5);
         }
+    }
+}
+
+/// Native Sinkhorn vs f64 math (`Op::Sinkhorn`).
+#[test]
+fn sinkhorn_matches_f64() {
+    let Some(be) = cuda() else { return };
+    let eps = 1e-6f64;
+    for &(count, n, iters) in &[(1usize, 4usize, 20usize), (130, 4, 20), (3, 7, 3), (5, 1, 2)] {
+        let x: Vec<f32> = rnd(count * n * n, 31).iter().map(|v| v * 6.0).collect();
+        let dims = SinkhornDims { count, n, iters, eps: (eps as f32).to_bits() };
+        let got = floats(DType::F32, &run_on(&be, &Kernel::Sinkhorn(dims), &[bytes(DType::F32, &x)], count * n * n * 4));
+        let mut want = vec![0f32; count * n * n];
+        for m in 0..count {
+            let mut c: Vec<f64> = x[m * n * n..(m + 1) * n * n].iter().map(|&v| v as f64).collect();
+            for i in 0..n {
+                let row = &mut c[i * n..(i + 1) * n];
+                let mx = row.iter().cloned().fold(f64::MIN, f64::max);
+                row.iter_mut().for_each(|v| *v = (*v - mx).exp());
+                let s: f64 = row.iter().sum();
+                row.iter_mut().for_each(|v| *v = *v / s + eps);
+            }
+            let cols = |c: &mut Vec<f64>| {
+                for j in 0..n {
+                    let s: f64 = (0..n).map(|i| c[i * n + j]).sum::<f64>() + eps;
+                    (0..n).for_each(|i| c[i * n + j] /= s);
+                }
+            };
+            cols(&mut c);
+            for _ in 1..iters {
+                for i in 0..n {
+                    let s: f64 = c[i * n..(i + 1) * n].iter().sum::<f64>() + eps;
+                    c[i * n..(i + 1) * n].iter_mut().for_each(|v| *v /= s);
+                }
+                cols(&mut c);
+            }
+            want[m * n * n..(m + 1) * n * n].iter_mut().zip(&c).for_each(|(w, v)| *w = *v as f32);
+        }
+        check(&format!("sinkhorn {count}x{n}x{n} iters {iters}"), &got, &want, 1e-5);
     }
 }
 

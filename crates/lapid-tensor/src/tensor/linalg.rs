@@ -82,6 +82,14 @@ impl Tensor {
         Ok(Tensor::from_op(Op::Softmax, smallvec![self.clone()], self.shape(), self.dtype()))
     }
 
+    pub(super) fn sinkhorn_impl(&self, iters: usize, eps: f32) -> Result<Tensor> {
+        let r = self.rank();
+        if self.dtype() != DType::F32 || r < 2 || self.shape()[r - 1] != self.shape()[r - 2] || iters == 0 {
+            bail!("invalid_argument", "sinkhorn needs f32 [..., n, n] and iters >= 1, got {} {:?}, iters {iters}", self.dtype().name(), self.shape());
+        }
+        Ok(Tensor::from_op(Op::Sinkhorn { iters, eps }, smallvec![self.clone()], self.shape(), DType::F32))
+    }
+
     pub(super) fn rms_norm_impl(&self, weight: &Tensor, eps: f32) -> Result<Tensor> {
         check::float_dtype(self, "rms_norm")?;
         check::float_dtype(weight, "rms_norm weight")?;

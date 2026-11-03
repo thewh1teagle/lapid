@@ -12,7 +12,7 @@ use crate::op::{Op, UnaryOp};
 use crate::tensor::Tensor;
 
 /// Decompose a composite node (Softmax / LayerNorm / RmsNorm / Attention / MatMulId with float experts /
-/// GatedDeltaNet) into an equivalent
+/// GatedDeltaNet / Sinkhorn) into an equivalent
 /// subgraph of primitives. Returns `None` for non-composite nodes.
 pub fn decompose(node: &Tensor) -> Result<Option<Tensor>> {
     let src = node.src();
@@ -46,6 +46,10 @@ pub fn decompose(node: &Tensor) -> Result<Option<Tensor>> {
             expect_srcs(node, 6)?;
             gated_delta_net(src, *scale)?
         }
+        Op::Sinkhorn { iters, eps } => {
+            expect_srcs(node, 1)?;
+            sinkhorn(&src[0], *iters, *eps)?
+        }
         _ => return Ok(None),
     };
     Ok(Some(out.cast(node.dtype())?))
@@ -64,6 +68,18 @@ fn softmax(x: &Tensor) -> Result<Tensor> {
     let e = x.sub(&m)?.exp()?;
     let s = e.sum(-1, true)?;
     e.div(&s)
+}
+
+/// See `Op::Sinkhorn`.
+fn sinkhorn(x: &Tensor, iters: usize, eps: f32) -> Result<Tensor> {
+    let r = x.rank() as isize;
+    let eps = f64::from(eps);
+    let norm = |c: &Tensor, axis: isize| -> Result<Tensor> { c.div(&c.sum(axis, true)?.add_scalar(eps)?) };
+    let mut c = norm(&softmax(x)?.add_scalar(eps)?, r - 2)?;
+    for _ in 1..iters {
+        c = norm(&norm(&c, r - 1)?, r - 2)?;
+    }
+    Ok(c)
 }
 
 /// (x - mean) * rsqrt(var + eps) * w + b over the last axis (biased variance).

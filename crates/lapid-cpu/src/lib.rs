@@ -505,6 +505,8 @@ fn run_launch(ctx: &Ctx, ws: &mut Workspace, l: &Launch, bufs: &[&CpuBuffer], co
             let extra = delta::Extra { state: xdst(copies.state, Some(5))?, o: xdst(copies.o, None)? };
             delta::gated_delta_net(ctx, dims, &inputs, &out_buf.dst(spec.out_dtype)?, &extra)
         }
+        // opt-in kernel (`CompileOptions::native_sinkhorn`): the CPU runs the decomposition
+        Kernel::Sinkhorn(_) => Err(Error::new("unsupported", "cpu: no native sinkhorn kernel")),
         Kernel::Attention(spec, dims) => {
             expect(3 + spec.mask_dtype.is_some() as usize)?;
             let inputs = AttnInputs {

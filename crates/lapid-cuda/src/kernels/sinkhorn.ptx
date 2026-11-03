@@ -1,0 +1,43 @@
+// Sinkhorn normalization (`Op::Sinkhorn`), one thread per n x n matrix held in registers
+// (n = {{N}} baked in): row softmax (as the softmax kernel: ex2.approx, rcp.rn) + eps, a
+// column normalization, then iters - 1 times row and column normalizations, every one
+// `c * rcp.approx(sum + eps)` (within ~2 ulp of the decomposition's division).
+// Params: [count, iters, eps_bits]
+.visible .entry lapid_main(
+{{ARGS}}
+)
+{
+    .reg .pred %p;
+    .reg .b32 %m, %count, %iters, %it, %t;
+    .reg .b64 %a;
+    .reg .f32 %c<{{NN}}>, %s, %e, %eps, %mx;
+{{PTRS}}
+    mov.u32 %m, %ctaid.x;
+    mov.u32 %t, %ntid.x;
+    mov.u32 %it, %tid.x;
+    mad.lo.u32 %m, %m, %t, %it;
+    ld.param.u32 %count, [P];
+    setp.ge.u32 %p, %m, %count;
+    @%p bra DONE;
+    ld.param.u32 %iters, [P+4];
+    ld.param.f32 %eps, [P+8];
+    mul.wide.u32 %a, %m, {{BYTES}};
+    add.s64 %a, %a, %g_x;
+{{LOAD}}
+{{SOFTMAX}}
+{{COLS}}
+    mov.u32 %it, 1;
+LOOP:
+    setp.ge.u32 %p, %it, %iters;
+    @%p bra END;
+{{ROWS}}
+{{COLS}}
+    add.u32 %it, %it, 1;
+    bra LOOP;
+END:
+    mul.wide.u32 %a, %m, {{BYTES}};
+    add.s64 %a, %a, %g_out;
+{{STORE}}
+DONE:
+    ret;
+}

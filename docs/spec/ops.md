@@ -126,6 +126,13 @@ the `o_t`, rows `[T, T + Dk)` the final `S`. (ggml stores `S` transposed and fix
 `scale = 1/√Dv`; values are the same.) Decomposition: the recurrence unrolled over T with
 elementwise / reduce primitives. Tolerance: abs ≤ 1e-4 · (1 + |y|) per element in f32.
 
+**`Sinkhorn { iters, eps }`** (DeepSeek mHC `comb`), srcs `[x [..., n, n]]` (f32 logits) →
+f32, same shape. Per matrix: `c = softmax(x) + eps` over the last axis, `c = c / (Σ_rows c +
+eps)` (each column), then `iters − 1` times `c = c / (Σ_cols c + eps)` (each row) and the
+column step again. Decomposition: softmax and one reduce + divide per step (~2 launches per
+step); backends opt in to `Kernel::Sinkhorn` (n ≤ 8) through `Backend::compile_options`.
+Tolerance: abs ≤ 1e-5 per element.
+
 **`Gather`**, srcs `[table [V, D], indices (i32, any shape S)]` → `[S..., D]` f32:
 `out[s, :] = dequant(table[indices[s], :])`. An index outside `[0, V)` makes the evaluation
 fail with `Error{code:"index_out_of_range"}`; kernels never read out of bounds (GPUs check
@@ -215,8 +222,8 @@ on index ramps and `Where(…, −inf)`, `Softmax`, `matmul(·, v)`.
   Roots are f32 except an elementwise kernel storing to i32 (raw word store).
 - `GatherAxis` runs over a canonical `[outer, n, inner]` space with rank-3 views of x and
   the indices; `TopK` reads a row-major `[rows, cols]` (axis moved last, copied if needed).
-- `MatMulId` reads contiguous x / ids and the expert stack as stored; `GatedDeltaNet` reads
-  contiguous inputs (copies when they are views).
+- `MatMulId` reads contiguous x / ids and the expert stack as stored; `GatedDeltaNet` and
+  `Sinkhorn` read contiguous inputs (copies when they are views).
 - `Softmax`/`LayerNorm` kernels read row-major inputs; `Attention` reads q/k/v/mask through
   rank-4 views (so `reshape → permute` to heads is free).
 - Iteration spaces are coalesced (size-1 dims dropped, mutually contiguous dims merged)

@@ -119,6 +119,7 @@ fn op_code(op: &Op) -> u64 {
         Op::MatMulId => 24,
         Op::GatedDeltaNet { .. } => 25,
         Op::RmsNorm { .. } => 26,
+        Op::Sinkhorn { .. } => 27,
     }
 }
 
@@ -260,6 +261,7 @@ impl GraphKey {
                         dims.push(*start as u64);
                     }
                     Op::GatedDeltaNet { scale } => w.push(scale.to_bits() as u64),
+                    Op::Sinkhorn { iters, eps } => w.extend([*iters as u64, eps.to_bits() as u64]),
                     Op::Where | Op::Reshape | Op::Expand | Op::Contiguous | Op::Gather | Op::Softmax | Op::MatMulId => {}
                 }
             }

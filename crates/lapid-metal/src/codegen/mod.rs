@@ -177,6 +177,8 @@ pub(crate) fn plan(kernel: &Kernel) -> Result<Plan> {
         Kernel::MatMulId(s, d) => matmul_id::plan_matmul_id(s, d),
         Kernel::GatedDeltaNet(s, d) => matmul_id::plan_delta_net(s, d),
         Kernel::RmsNorm(s, d) => rows::plan_rms_norm(s, d).map(Plan::single),
+        // opt-in kernel (`CompileOptions::native_sinkhorn`): never lowered for this backend
+        Kernel::Sinkhorn(_) => Err(Error::new("unsupported", "metal: no native sinkhorn kernel")),
     }
 }
 

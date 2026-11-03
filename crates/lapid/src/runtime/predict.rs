@@ -91,6 +91,7 @@ fn walk_ptrs(plan: &mut Plan, f: &mut dyn FnMut(*mut i64)) {
             Kernel::GatedDeltaNet(_, d) => {
                 [&mut d.b, &mut d.t, &mut d.h, &mut d.dk, &mut d.dv].into_iter().for_each(|x| u(x, f))
             }
+            Kernel::Sinkhorn(d) => [&mut d.count, &mut d.n, &mut d.iters].into_iter().for_each(|x| u(x, f)),
         }
     }
     plan.bufs.iter_mut().for_each(|b| u(&mut b.bytes, f));

@@ -46,6 +46,8 @@ pub(crate) enum Timing<'a> {
 #[derive(Default)]
 pub(crate) struct Profile {
     pub enabled: bool,
+    /// `LAPID_PROFILE=2`: totals per kernel and launch shape (grid, block, params).
+    pub shapes: bool,
     /// kernel name → (launches, ms)
     by_name: HashMap<String, (usize, f64)>,
     /// kernel kind → (launches, ms), drained by `take_profile`
@@ -169,6 +171,7 @@ impl Exec {
         })?;
         let prof = Profile {
             enabled: profiling_enabled(),
+            shapes: std::env::var("LAPID_PROFILE").is_ok_and(|v| v == "2"),
             ..Profile::default()
         };
         let use_graphs = graph::enabled(ctx.drv);
@@ -387,6 +390,11 @@ impl Exec {
         // the GPU runs chunk i while the host captures chunk i + 1 (the first chunk is short
         // to start the GPU early).
         let capture = self.use_graphs && !timed && items.len() >= 2;
+        // trace: GPU span of the execute (first launch start to last launch end)
+        let span = trace_enabled() && capture;
+        if span {
+            self.ensure_events(ctx, 2)?;
+        }
         let mut kernels = Vec::with_capacity(items.len());
         let bind = Bind { ptrs: &ptrs, scratch, flag };
         if capture {
@@ -413,9 +421,17 @@ impl Exec {
                     ),
                 );
                 let t = std::time::Instant::now();
+                if span && start == 0 {
+                    // SAFETY: event + stream owned by us.
+                    drv.check("cuEventRecord", unsafe { (drv.cuEventRecord)(self.events[0], self.stream) })?;
+                }
                 self.graphs.launch(drv, self.stream, key, graph)?;
                 update_ms += t.elapsed().as_secs_f64() * 1e3;
                 start = end;
+            }
+            if span {
+                // SAFETY: as above.
+                drv.check("cuEventRecord", unsafe { (drv.cuEventRecord)(self.events[1], self.stream) })?;
             }
         } else {
             self.issue(ctx, modules, &items, &bind, timed, &mut kernels)?;
@@ -429,8 +445,13 @@ impl Exec {
             )
         })?;
         if trace_enabled() {
+            let mut gpu = 0f32;
+            if span {
+                // SAFETY: both events were recorded on our (now idle) stream.
+                drv.check("cuEventElapsedTime", unsafe { (drv.cuEventElapsedTime)(&mut gpu, self.events[0], self.events[1]) })?;
+            }
             eprintln!(
-                "[lapid-cuda] execute: {} launches, host {host_ms:.3} ms, wait {:.3} ms, graph {capture} (plan {plan_ms:.3}, graph update+launch {update_ms:.3}; graphs updated/instantiated/rejected {:?})",
+                "[lapid-cuda] execute: {} launches, host {host_ms:.3} ms, wait {:.3} ms, gpu span {gpu:.3} ms, graph {capture} (plan {plan_ms:.3}, graph update+launch {update_ms:.3}; graphs updated/instantiated/rejected {:?})",
                 items.len(),
                 sync_t0.elapsed().as_secs_f64() * 1e3,
                 self.graphs.stats
@@ -454,7 +475,15 @@ impl Exec {
             }
             if self.prof.enabled {
                 for ((it, k), &t) in items.iter().zip(&kernels).zip(&ms) {
-                    self.prof.add(&k.name, it.plan.key.label(), t);
+                    if self.prof.shapes {
+                        let name = format!(
+                            "{} grid {:?} block {} params {:?}",
+                            k.name, it.plan.grid, it.plan.block, it.plan.params
+                        );
+                        self.prof.add(&name, it.plan.key.label(), t);
+                    } else {
+                        self.prof.add(&k.name, it.plan.key.label(), t);
+                    }
                 }
                 self.prof.host_ms += host_ms;
                 self.prof.executes += 1;
