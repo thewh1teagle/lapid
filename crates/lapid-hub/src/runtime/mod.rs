@@ -33,6 +33,7 @@ pub mod resolve;
 pub mod seq2seq;
 pub mod serve;
 pub mod session;
+pub mod steer;
 pub mod transducer;
 pub mod tts;
 pub mod tts_harness;
@@ -45,4 +46,5 @@ pub use generate::{CancelToken, FinishReason, GenerateOptions, GenerationStats, 
 pub use registry::{LmDef, ModelEntry};
 pub use serve::{AnyModel, LoadOptions};
 pub use session::{LmCache, LmState, Session};
+pub use steer::{Hook, SteerFile, SteerSpec, Steering};
 pub use vlm::{Media, MediaPrompt, VisionLm};

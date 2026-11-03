@@ -13,6 +13,8 @@
 //! for t in vlm.mm_chat_stream(&mut session, &[msg], &ChatOptions::default())? { print!("{}", t?.text); }
 //! ```
 
+use std::sync::Arc;
+
 use lapid::{Device, Error, Result, Tensor};
 use lapid_verify::harness::Reference;
 use serde_json::Value;
@@ -22,6 +24,7 @@ use super::chat::ChatOptions;
 use super::generate::{GenerateOptions, TokenStream};
 use super::jinja;
 use super::session::{LmState, Session};
+use super::steer::Steering;
 use crate::vision::{Image, Message, collect_images};
 
 /// Embedding rows that replace a run of image placeholder tokens.
@@ -159,9 +162,9 @@ fn check_media(n: usize, media: &[Media]) -> Result<()> {
 }
 
 /// [`step`] with image rows (absolute `start`s within `ids`).
-pub fn step_media<M: VisionLm>(model: &M, device: &Device, ids: &[u32], media: &[Media], state: &mut M::State) -> Result<Vec<f32>> {
+pub fn step_media<M: VisionLm>(model: &M, device: &Device, ids: &[u32], media: &[Media], state: &mut M::State, steering: Option<&Arc<Steering>>) -> Result<Vec<f32>> {
     if media.is_empty() {
-        return step(model, device, ids, state);
+        return step(model, device, ids, state, steering);
     }
     check_media(ids.len(), media)?;
     let chunks = chunk_bounds(ids.len(), media, model.prefill_chunk());
@@ -169,7 +172,7 @@ pub fn step_media<M: VisionLm>(model: &M, device: &Device, ids: &[u32], media: &
     for (ci, &(a, b)) in chunks.iter().enumerate() {
         let rows = if ci == last { Rows::Last } else { Rows::None };
         let local: Vec<Media> = media.iter().filter(|m| m.start >= a && m.start < b).map(|m| Media { start: m.start - a, ..m.clone() }).collect();
-        let out = match model.forward_media(&ids[a..b], &local, state, rows, &mut Taps::off()) {
+        let out = match model.forward_media(&ids[a..b], &local, state, rows, &mut Taps::off().with_steering(steering.cloned())) {
             Ok(o) => o,
             Err(e) => {
                 state.discard();
@@ -258,10 +261,11 @@ impl<M: VisionLm> Llm<M> {
             session.media.push((im.start, im.hash));
         }
         let (model, device) = (self.model(), self.device());
+        let steering = session.steering.clone();
         let step_fn = move |ids: &[u32]| -> Result<Vec<f32>> {
             let at = session.tokens.len();
             let local: Vec<Media> = media.iter().filter(|m| m.start >= at && m.start < at + ids.len()).map(|m| Media { start: m.start - at, ..m.clone() }).collect();
-            let logits = step_media(model, device, ids, &local, &mut session.state)?;
+            let logits = step_media(model, device, ids, &local, &mut session.state, steering.as_ref())?;
             session.tokens.extend_from_slice(ids);
             Ok(logits)
         };

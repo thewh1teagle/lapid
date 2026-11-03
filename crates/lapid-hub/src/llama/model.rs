@@ -19,7 +19,7 @@ use lapid_nn::{Attention, GatedMlp, KvCache, Linear, Loader, Mask, RmsNorm};
 use serde_json::Value;
 
 use super::config::LlamaConfig;
-use crate::runtime::{CausalLm, LmCache, LmDims, LmState, Rows, Taps};
+use crate::runtime::{CausalLm, Hook, LmCache, LmDims, LmState, Rows, Taps};
 
 pub const EMBED: &str = "model.embed_tokens.weight";
 pub const LM_HEAD: &str = "lm_head.weight";
@@ -125,14 +125,15 @@ impl Layer {
         let q = rotate_half(&heads(&a.q, a.q_norm.as_ref(), a.n_head)?, cos, sin)?;
         let k = rotate_half(&heads(&a.k, a.k_norm.as_ref(), a.n_kv_head)?, cos, sin)?;
         let (k, v) = kv.append(i, &k, &heads(&a.v, None, a.n_kv_head)?)?;
-        let y = self.attn.attend_heads(&q, &k, &v, &self.mask)?;
+        let y = taps.steer(Hook::AttnOut, i, &self.attn.attend_heads(&q, &k, &v, &self.mask)?)?;
         taps.tap(format_args!("layers.{i}.op"), &y);
         let x = x.add(&y)?;
         let h = self.norm2.forward(&x)?;
-        let x = x.add(&match &self.ffn {
+        let f = match &self.ffn {
             Ffn::Dense(m) => m.forward(&h)?,
             Ffn::Moe(m) => m.forward(&h)?,
-        })?;
+        };
+        let x = taps.steer(Hook::Resid, i, &x.add(&taps.steer(Hook::FfnOut, i, &f)?)?)?;
         taps.tap(format_args!("layers.{i}"), &x);
         Ok(x)
     }
@@ -181,6 +182,10 @@ impl CausalLm for LlamaModel {
 
     fn new_state(&self) -> LmCache {
         LmCache::new(KvCache::with_windows(self.cfg.windows.clone()), 0)
+    }
+
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
     }
 
     fn end_of_turn(&self) -> &'static [&'static str] {

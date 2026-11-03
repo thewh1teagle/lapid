@@ -36,7 +36,7 @@ use serde_json::Value;
 pub use crate::runtime::{CancelToken, ChatOptions, FinishReason, GenerateOptions, GenerationStats, Message, Token, TokenStream};
 pub use config::{Gemma4Config, LayerType};
 use crate::cmd::ModelArgs;
-use crate::runtime::{CausalLm, LmCache, LmDef, LmDims, Llm, Media, ModelEntry, Rows, Taps, VisionLm, lm_bench, vlm_verify};
+use crate::runtime::{CausalLm, Hook, LmCache, LmDef, LmDims, Llm, Media, ModelEntry, Rows, Taps, VisionLm, lm_bench, vlm_verify};
 use config::ImageProcessorConfig;
 use model::Decoder;
 use vision::{PreparedImage, VisionTower};
@@ -105,6 +105,10 @@ impl CausalLm for Gemma4Model {
 
     fn new_state(&self) -> LmCache {
         LmCache::new(self.decoder.new_cache(), 0)
+    }
+
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
     }
 
     fn end_of_turn(&self) -> &'static [&'static str] {

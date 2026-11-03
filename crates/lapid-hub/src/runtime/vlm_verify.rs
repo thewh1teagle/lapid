@@ -111,9 +111,9 @@ fn traced<M: VisionLm>(llm: &Llm<M>, r: &Reference, case: &Case<M::Image>) -> Re
 fn decode_logits<M: VisionLm>(llm: &Llm<M>, ids: &[u32], media: &[Media], forced: &[u32], steps: usize) -> Result<Vec<f32>> {
     let (m, dev) = (llm.model(), llm.device());
     let mut st = m.new_state();
-    let mut out = step_media(m, dev, ids, media, &mut st)?;
+    let mut out = step_media(m, dev, ids, media, &mut st, None)?;
     for &t in forced.iter().take(steps.saturating_sub(1)) {
-        out.extend(step(m, dev, &[t], &mut st)?);
+        out.extend(step(m, dev, &[t], &mut st, None)?);
     }
     Ok(out)
 }
@@ -324,7 +324,7 @@ pub fn verify_text<M: VisionLm>(desc: &Descriptor, reference: Option<&Path>, arg
     let want_last = r.acts.get("inject.logits.last")?;
     let mut cmp = Comparison::new();
     cmp.compare("inject.logits.last", named(&forward_media_traced(m, dev, &prompt, &media, Rows::Last)?, "logits"), &want_last, tol);
-    let last = step_media(m, dev, &prompt, &media, &mut m.new_state())?;
+    let last = step_media(m, dev, &prompt, &media, &mut m.new_state(), None)?;
     cmp.compare("inject.prefill.last", &last, &want_last, tol);
     cmp.compare("inject.norm", named(&forward_media_traced(m, dev, &prompt, &media, Rows::All)?, "norm"), &r.acts.get("inject.norm")?, tol);
     let argmax = argmax_rows(&last, &want_last, m.dims().vocab);

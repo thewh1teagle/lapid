@@ -31,7 +31,7 @@ use serde_json::Value;
 
 use super::config::Deepseek41Config;
 use super::encoding;
-use crate::runtime::{CausalLm, ChatOptions, LmDims, LmState, Rows, Taps};
+use crate::runtime::{CausalLm, ChatOptions, Hook, LmDims, LmState, Rows, Taps};
 use attention::{Attention, LayerState, Shared};
 use moe::Moe;
 
@@ -224,6 +224,12 @@ impl CausalLm for Deepseek41Model {
         self.prefill_chunk
     }
 
+    /// `attn_out`: the attention output (after `wo_b`) before the mHC expand; `ffn_out`:
+    /// the MoE output likewise; `resid`: every stream after the layer.
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
+    }
+
     /// V4.1 ships no Jinja template: prompts are the upstream `encoding/encoding.py` format.
     fn render_prompt(&self, messages_json: &str, tools_json: Option<&str>, _add_generation_prompt: bool, opts: &ChatOptions) -> Option<Result<String>> {
         Some(encoding::render_json(messages_json, tools_json, opts.enable_thinking.unwrap_or(false), None))
@@ -258,11 +264,13 @@ impl CausalLm for Deepseek41Model {
             };
             let (a, s) = layer.attn.forward(&layer.attn_norm.forward(&xa)?, pos, &st.layers[i], &mut shared)?;
             next.push(s);
+            let a = taps.steer(Hook::AttnOut, i, &a)?;
             taps.tap(format_args!("layers.{i}.op"), &a);
             x = expand(&a, &x, &am.post, &am.comb)?;
             let fm = layer.ffn_hc.mix(&x)?;
             let m = layer.moe.forward(&layer.ffn_norm.forward(&collapse(&am.pre, &x)?)?.cast(DType::F32)?)?;
-            x = expand(&m, &x, &fm.post, &fm.comb)?;
+            x = expand(&taps.steer(Hook::FfnOut, i, &m)?, &x, &fm.post, &fm.comb)?;
+            x = taps.steer(Hook::Resid, i, &x)?;
             pre = Some(fm.pre);
             if taps.enabled() {
                 taps.tap(format_args!("layers.{i}"), &x.reshape(&[n, hc * d])?);
@@ -284,3 +292,5 @@ impl CausalLm for Deepseek41Model {
 }
 #[cfg(test)]
 mod bench_tests;
+#[cfg(test)]
+mod steer_tests;

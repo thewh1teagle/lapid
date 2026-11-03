@@ -28,7 +28,7 @@ use super::ple::{NgramTable, Ple};
 use crate::llama::model::{lm_head, logits};
 use crate::qwen35::config::LayerType;
 use crate::qwen35::model::{delta_net, deltanet_step, gated_attention, moe};
-use crate::runtime::{CausalLm, LmCache, LmDims, LmState, Rows, Taps};
+use crate::runtime::{CausalLm, Hook, LmCache, LmDims, LmState, Rows, Taps};
 
 pub const MIXER: &str = "model.hyper_connection_mixer";
 
@@ -181,6 +181,10 @@ impl CausalLm for Qwen4ExpModel {
         State { cache: LmCache::new(KvCache::new(2 * n), 2 * n + 1), hist: Vec::new(), staged_hist: None }
     }
 
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
+    }
+
     fn end_of_turn(&self) -> &'static [&'static str] {
         &["<|im_end|>", "<|endoftext|>"]
     }
@@ -205,10 +209,12 @@ impl CausalLm for Qwen4ExpModel {
                     Mixer::Attention(a) => a.forward(h, &mut st.cache.kv, i, nl + i, offset)?,
                     Mixer::Linear(dn) => deltanet_step(dn, h, &mut st.cache, i, nl + i)?,
                 };
+                let y = taps.steer(Hook::AttnOut, i, &y)?;
                 taps.tap(format_args!("layers.{i}.op"), &y);
                 Ok(y)
             })?;
-            x = layer.mlp_hc.around(&x, |h| layer.moe.forward(h))?;
+            x = layer.mlp_hc.around(&x, |h| taps.steer(Hook::FfnOut, i, &layer.moe.forward(h)?))?;
+            x = taps.steer(Hook::Resid, i, &x)?;
             taps.tap(format_args!("layers.{i}"), &x);
         }
         if let Some(p) = &self.cfg.ple {

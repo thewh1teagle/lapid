@@ -12,7 +12,7 @@ use lapid_nn::{Attention, Conv1d, Embedding, GatedMlp, KvCache, Linear, Loader, 
 use serde_json::Value;
 
 use super::config::{LayerType, Lfm3Config};
-use crate::runtime::{CausalLm, LmCache, LmDims, LmState, Rows, Taps};
+use crate::runtime::{CausalLm, Hook, LmCache, LmDims, LmState, Rows, Taps};
 
 /// Token embedding; also the tied output projection.
 pub const EMBED: &str = "model.embed_tokens.weight";
@@ -148,6 +148,10 @@ impl CausalLm for Lfm3Model {
         LmCache::new(KvCache::with_windows(self.cfg.kv_windows()), self.layers.len())
     }
 
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
+    }
+
     fn end_of_turn(&self) -> &'static [&'static str] {
         &["<|im_end|>"]
     }
@@ -170,12 +174,12 @@ impl CausalLm for Lfm3Model {
             if let Some(n) = &layer.post_op_norm {
                 y = n.forward(&y)?;
             }
-            x = x.add(&y)?;
+            x = x.add(&taps.steer(Hook::AttnOut, i, &y)?)?;
             let mut f = layer.mlp.forward(&layer.ffn_norm.forward(&x)?)?;
             if let Some(n) = &layer.post_ffn_norm {
                 f = n.forward(&f)?;
             }
-            x = x.add(&f)?;
+            x = taps.steer(Hook::Resid, i, &x.add(&taps.steer(Hook::FfnOut, i, &f)?)?)?;
             taps.tap(format_args!("layers.{i}"), &x);
         }
         let n = ids.len();

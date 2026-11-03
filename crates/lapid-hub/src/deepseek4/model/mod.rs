@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use super::config::Deepseek4Config;
 use super::encoding;
-use crate::runtime::{CausalLm, ChatOptions, LmDims, LmState, Rows, Taps};
+use crate::runtime::{CausalLm, ChatOptions, Hook, LmDims, LmState, Rows, Taps};
 use attention::{Attention, Indexer, LayerState};
 use compress::Compressor;
 use moe::Moe;
@@ -232,6 +232,10 @@ impl CausalLm for Deepseek4Model {
         State { layers: vec![LayerState::default(); self.layers.len()], ..Default::default() }
     }
 
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
+    }
+
     fn end_of_turn(&self) -> &'static [&'static str] {
         &[encoding::EOS]
     }
@@ -257,11 +261,12 @@ impl CausalLm for Deepseek4Model {
             let pre = layer.attn_hc.pre(&x)?;
             let (a, s) = layer.attn.forward(&layer.attn_norm.forward(&pre.collapsed)?, pos, &st.layers[i])?;
             next.push(s);
+            let a = taps.steer(Hook::AttnOut, i, &a)?;
             taps.tap(format_args!("layers.{i}.op"), &a);
             x = layer.attn_hc.post(&a, &x, &pre)?;
             let pre = layer.ffn_hc.pre(&x)?;
             let m = layer.moe.forward(&layer.ffn_norm.forward(&pre.collapsed)?, ids)?;
-            x = layer.ffn_hc.post(&m, &x, &pre)?;
+            x = taps.steer(Hook::Resid, i, &layer.ffn_hc.post(&taps.steer(Hook::FfnOut, i, &m)?, &x, &pre)?)?;
             if taps.enabled() {
                 taps.tap(format_args!("layers.{i}"), &x.reshape(&[n, hc * d])?);
             }

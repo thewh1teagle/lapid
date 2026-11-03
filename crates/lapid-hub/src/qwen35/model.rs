@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use super::config::{LayerType, Qwen35Config};
 use crate::llama::model::{lm_head, logits, qwen_moe};
-use crate::runtime::{CausalLm, LmCache, LmDims, LmState, Rows, Taps};
+use crate::runtime::{CausalLm, Hook, LmCache, LmDims, LmState, Rows, Taps};
 
 /// Gated attention of layer `p` (`{p}.self_attn.*`).
 pub(crate) fn gated_attention(l: &Loader<'_>, cfg: &Qwen35Config, p: &str) -> Result<GatedAttention> {
@@ -119,6 +119,10 @@ impl CausalLm for Qwen35Model {
         LmCache::new(KvCache::new(n), 2 * n)
     }
 
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
+    }
+
     fn end_of_turn(&self) -> &'static [&'static str] {
         &["<|im_end|>", "<|endoftext|>"]
     }
@@ -134,13 +138,15 @@ impl CausalLm for Qwen35Model {
                 Mixer::Attention(a) => a.forward(&h, &mut st.kv, i, offset, &Mask::Causal)?,
                 Mixer::Linear(dn) => deltanet_step(dn, &h, st, i, nl + i)?,
             };
+            let y = taps.steer(Hook::AttnOut, i, &y)?;
             taps.tap(format_args!("layers.{i}.op"), &y);
             x = x.add(&y)?;
             let h = layer.norm2.forward(&x)?;
-            x = x.add(&match &layer.ffn {
+            let f = match &layer.ffn {
                 Ffn::Dense(m) => m.forward(&h)?,
                 Ffn::Moe(m) => m.forward(&h)?,
-            })?;
+            };
+            x = taps.steer(Hook::Resid, i, &x.add(&taps.steer(Hook::FfnOut, i, &f)?)?)?;
             taps.tap(format_args!("layers.{i}"), &x);
         }
         logits(&self.head, &x, rows, taps, |x| self.norm.forward(x))

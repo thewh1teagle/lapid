@@ -18,6 +18,7 @@
 //! ```
 
 use std::path::Path;
+use std::sync::Arc;
 
 use lapid::{Device, Error, LapidFile, Result, Tensor};
 use lapid_nn::{Loader, Precision, SamplingParams, Tokenizer};
@@ -26,6 +27,7 @@ use serde_json::Value;
 use super::chat::{ChatOptions, ChatTemplate, Message, TextAssets};
 use super::generate::{GenerateOptions, TokenStream};
 use super::session::{LmState, Session};
+use super::steer::{Hook, SteerFile, Steering};
 use crate::model::{Bytes, Model, ModelInfo};
 
 /// Which logit rows a forward computes.
@@ -39,20 +41,40 @@ pub enum Rows {
     None,
 }
 
-/// Named intermediates collected during a traced forward (`embed`, `layers.{i}`,
-/// `layers.{i}.op`, `norm`, ...; the pipeline adds `logits`). Off during generation.
+/// Per-forward hooks: named intermediates collected during a traced forward (`embed`,
+/// `layers.{i}`, `layers.{i}.op`, `norm`, ...; the pipeline adds `logits`; off during
+/// generation), and the activation [`Steering`] applied at the model's hook points.
 #[derive(Default)]
 pub struct Taps {
     list: Option<Vec<(String, Tensor)>>,
+    steering: Option<Arc<Steering>>,
 }
 
 impl Taps {
     pub fn off() -> Taps {
-        Taps { list: None }
+        Taps::default()
     }
 
     pub fn on() -> Taps {
-        Taps { list: Some(Vec::new()) }
+        Taps { list: Some(Vec::new()), steering: None }
+    }
+
+    /// The same taps with `steering` applied by [`steer`](Self::steer).
+    pub fn with_steering(mut self, steering: Option<Arc<Steering>>) -> Taps {
+        self.steering = steering;
+        self
+    }
+
+    pub fn steering(&self) -> Option<&Arc<Steering>> {
+        self.steering.as_ref()
+    }
+
+    /// `x` steered at `hook` of `layer` (`x` itself without steering there).
+    pub fn steer(&self, hook: Hook, layer: usize, x: &Tensor) -> Result<Tensor> {
+        match &self.steering {
+            Some(s) => s.apply(hook, layer, x),
+            None => Ok(x.clone()),
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -93,6 +115,10 @@ pub trait CausalLm: Sized + Send + Sync + 'static {
     /// f32 logits of `rows` ([n_rows, vocab]), `None` for `Rows::None`.
     fn forward(&self, ids: &[u32], state: &mut Self::State, rows: Rows, taps: &mut Taps) -> Result<Option<Tensor>>;
 
+    /// Steering hook points the forward applies ([`Taps::steer`]); none by default.
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &[]
+    }
     /// Prompt tokens per evaluation during prefill (bounds attention scratch memory).
     fn prefill_chunk(&self) -> usize {
         512
@@ -145,7 +171,7 @@ pub(crate) fn eval_commit_owned<S: LmState>(device: &Device, mut outs: Vec<Tenso
 }
 
 /// Feed `ids` (a prompt, chunked, or one token) and return the f32 logits of the last position.
-pub fn step<M: CausalLm>(model: &M, device: &Device, ids: &[u32], state: &mut M::State) -> Result<Vec<f32>> {
+pub fn step<M: CausalLm>(model: &M, device: &Device, ids: &[u32], state: &mut M::State, steering: Option<&Arc<Steering>>) -> Result<Vec<f32>> {
     if ids.is_empty() {
         return Err(Error::new("invalid_argument", "step with no tokens"));
     }
@@ -155,7 +181,7 @@ pub fn step<M: CausalLm>(model: &M, device: &Device, ids: &[u32], state: &mut M:
         let _step = tracing::trace_span!("lm.step").entered();
         let rows = if ci == last { Rows::Last } else { Rows::None };
         let build = tracing::trace_span!("lm.build").entered();
-        let out = match model.forward(chunk, state, rows, &mut Taps::off()) {
+        let out = match model.forward(chunk, state, rows, &mut Taps::off().with_steering(steering.cloned())) {
             Ok(o) => o,
             Err(e) => {
                 state.discard();
@@ -318,8 +344,9 @@ impl<M: CausalLm> Llm<M> {
     pub fn generate<'a>(&'a self, session: &'a mut Session<M::State>, prompt: &[u32], opts: GenerateOptions) -> Result<TokenStream<'a>> {
         let cached = session.reuse_prefix(prompt);
         let (model, device) = (&self.model, &self.device);
+        let steering = session.steering.clone();
         let step_fn = move |ids: &[u32]| -> Result<Vec<f32>> {
-            let logits = step(model, device, ids, &mut session.state)?;
+            let logits = step(model, device, ids, &mut session.state, steering.as_ref())?;
             session.tokens.extend_from_slice(ids);
             Ok(logits)
         };
@@ -341,9 +368,27 @@ impl<M: CausalLm> Llm<M> {
 
     /// Logits of the last position after feeding `ids` to `session` (low-level step).
     pub fn step(&self, session: &mut Session<M::State>, ids: &[u32]) -> Result<Vec<f32>> {
-        let logits = step(&self.model, &self.device, ids, &mut session.state)?;
+        let logits = step(&self.model, &self.device, ids, &mut session.state, session.steering.as_ref())?;
         session.tokens.extend_from_slice(ids);
         Ok(logits)
+    }
+
+    /// Read a steering file and check that it fits this model.
+    pub fn load_steering(&self, path: &Path) -> Result<SteerFile> {
+        let f = SteerFile::open(path)?;
+        let d = self.model.dims();
+        f.check(M::ARCH, d.hidden, d.layers, self.model.steer_hooks())?;
+        Ok(f)
+    }
+
+    /// Steering of checked files with multipliers on this model's device (`None`: nothing
+    /// applies); set it on a session with [`Session::set_steering`].
+    pub fn steering(&self, parts: &[(&SteerFile, f32)]) -> Result<Option<Arc<Steering>>> {
+        let d = self.model.dims();
+        for (f, _) in parts {
+            f.check(M::ARCH, d.hidden, d.layers, self.model.steer_hooks())?;
+        }
+        Steering::new(&self.device, parts)
     }
 
     /// Uncached forward over `ids` with every tap realized (verification).

@@ -21,7 +21,7 @@ use lapid_nn::llm::hyper::{collapse, expand};
 
 use super::attention::Shared;
 use super::{Deepseek41Model, State, stage};
-use crate::runtime::{Rows, Taps};
+use crate::runtime::{Hook, Rows, Taps};
 
 /// Realize every lazy tensor of `ts` in one evaluation (leaves stay as they are).
 fn realize(device: &Device, ts: Vec<&mut Tensor>) -> Result<()> {
@@ -80,9 +80,14 @@ impl Deepseek41Model {
         let mut shared = Shared::default();
         let mut next = Vec::with_capacity(self.layers.len());
         let mut pending: Option<(Pending, Vec<i32>)> = None;
+        let steering = taps.steering().cloned();
+        let steer = |hook: Hook, i: usize, t: &Tensor| match &steering {
+            Some(s) => s.apply(hook, i, t),
+            None => Ok(t.clone()),
+        };
         let finish = |p: Pending, ids: &[i32], x: &Tensor| -> Result<Tensor> {
             let m = self.layers[p.layer].moe.forward_cached(cache, &p.x, ids, &p.w)?;
-            expand(&m, x, &p.post, &p.comb)
+            steer(Hook::Resid, p.layer, &expand(&steer(Hook::FfnOut, p.layer, &m)?, x, &p.post, &p.comb)?)
         };
         // Prompt chunks only: their tokens' guesses cover most of the next layer's union
         // (~85% of the misses of a 600-token chunk, ~87% of the reads used), and disk time is
@@ -105,6 +110,7 @@ impl Deepseek41Model {
             };
             let (a, s) = layer.attn.forward(&layer.attn_norm.forward(&xa)?, pos, &st.layers[i], &mut shared)?;
             next.push(s);
+            let a = steer(Hook::AttnOut, i, &a)?;
             tap(&mut pend_taps, format!("layers.{i}.op"), &a);
             x = expand(&a, &x, &am.post, &am.comb)?;
             let fm = layer.ffn_hc.mix(&x)?;

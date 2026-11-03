@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::config::Qwen3VlConfig;
 use crate::llama::model::LlamaModel;
-use crate::runtime::{CausalLm, LmDims, LmState, Media, MediaPrompt, Rows, Taps, VisionLm};
+use crate::runtime::{CausalLm, Hook, LmDims, LmState, Media, MediaPrompt, Rows, Taps, VisionLm};
 use crate::vision::{Image, ImageProcessor, Patches, VisionEncoder};
 
 pub use crate::llama::model::{EMBED, LM_HEAD};
@@ -98,6 +98,10 @@ impl CausalLm for Qwen3VlModel {
 
     fn new_state(&self) -> MropeCache {
         MropeCache { kv: KvCache::new(self.cfg.text.base.n_layers), pos: 0, next: 0, staged: None }
+    }
+
+    fn steer_hooks(&self) -> &'static [Hook] {
+        &Hook::ALL
     }
 
     fn end_of_turn(&self) -> &'static [&'static str] {

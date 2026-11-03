@@ -20,7 +20,7 @@ use lapid_nn::weights::fake_quant_act;
 use lapid_nn::{Embedding, GatedMlp, KvCache, Linear, Loader, Mask, Precision, RmsNorm, ZeroTailRope, ops};
 
 use super::config::{Gemma4Config, LayerType};
-use crate::runtime::{Media, Taps};
+use crate::runtime::{Hook, Media, Taps};
 
 pub const EMBED: &str = "model.embed_tokens.weight";
 pub const PLE_EMBED: &str = "model.embed_tokens_per_layer.weight";
@@ -326,12 +326,12 @@ impl Decoder {
         for (i, ly) in self.layers.iter().enumerate() {
             let a = ly.attn.forward(&ly.norms[0].forward(&x)?, kv, i, &mut shared, blocks)?;
             taps.tap(format_args!("layers.{i}.attn"), &a);
-            x = x.add(&ly.norms[1].forward(&a)?)?;
+            x = x.add(&taps.steer(Hook::AttnOut, i, &ly.norms[1].forward(&a)?)?)?;
             let mut f = ly.mlp.forward(&ly.norms[2].forward(&x)?)?;
             if let Some(moe) = &ly.moe {
                 f = moe.post_norm_1.forward(&f)?.add(&moe.forward(&x)?)?;
             }
-            x = x.add(&ly.norms[3].forward(&f)?)?;
+            x = x.add(&taps.steer(Hook::FfnOut, i, &ly.norms[3].forward(&f)?)?)?;
             if let (Some((gate, proj, post)), Some(pi)) = (&ly.ple, &ple) {
                 let g = ops::gelu_tanh(&gate.forward(&x)?)?.mul(&pi.slice(2, i, i + 1)?.reshape(&[1, n, c.ple_dim])?)?;
                 x = x.add(&post.forward(&proj.forward(&g)?)?)?;
@@ -339,6 +339,7 @@ impl Decoder {
             if ly.scalar != 1.0 {
                 x = x.mul_scalar(f64::from(ly.scalar))?;
             }
+            x = taps.steer(Hook::Resid, i, &x)?;
             taps.tap(format_args!("layers.{i}"), &x);
         }
         let x = match rows {

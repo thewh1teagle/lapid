@@ -8,8 +8,12 @@
 //! turns of a chat) only prefills the rest; with a rewindable state the longest common
 //! prefix is reused.
 
+use std::sync::Arc;
+
 use lapid::{Error, Result, Tensor};
 use lapid_nn::KvCache;
+
+use super::steer::Steering;
 
 /// Mutable per-sequence model state.
 pub trait LmState: Send {
@@ -139,11 +143,13 @@ pub struct Session<S> {
     /// (first token, fingerprint) of each image whose embeddings are in the state
     /// (`runtime::vlm`); prefix reuse stops before a different image.
     pub(crate) media: Vec<(usize, u64)>,
+    /// Activation steering of every forward; the state was computed under it.
+    pub(crate) steering: Option<Arc<Steering>>,
 }
 
 impl<S: LmState> Session<S> {
     pub fn new(state: S) -> Session<S> {
-        Session { state, tokens: Vec::new(), media: Vec::new() }
+        Session { state, tokens: Vec::new(), media: Vec::new(), steering: None }
     }
 
     /// Tokens fed to the model so far (prompt + generated, without a final unfed token).
@@ -162,6 +168,20 @@ impl<S: LmState> Session<S> {
 
     pub fn state_mut(&mut self) -> &mut S {
         &mut self.state
+    }
+
+    /// The steering applied by this session's forwards.
+    pub fn steering(&self) -> Option<&Arc<Steering>> {
+        self.steering.as_ref()
+    }
+
+    /// Steer the following forwards; a different steering than the cached state was
+    /// computed under starts the session over.
+    pub fn set_steering(&mut self, steering: Option<Arc<Steering>>) {
+        if self.steering.as_ref().map(|s| s.key()) != steering.as_ref().map(|s| s.key()) {
+            self.reset();
+        }
+        self.steering = steering;
     }
 
     pub fn reset(&mut self) {
@@ -204,5 +224,21 @@ mod tests {
         assert_eq!((s.tokens(), s.position()), (&[1u32, 2][..], 2));
         // Same prompt again: one token is always left to feed.
         assert_eq!(s.reuse_prefix(&[1, 2]), 1);
+        // Another steering: the state is not reused.
+        let st = super::super::steer::Steering::new(&lapid::Device::cpu(), &[(&steer_file(), 1.0)]).unwrap();
+        s.set_steering(st.clone());
+        assert_eq!(s.tokens().len(), 0);
+        s.tokens = vec![1, 2];
+        s.state.pos = 2;
+        s.set_steering(st);
+        assert_eq!(s.reuse_prefix(&[1, 2, 3]), 2);
+        s.set_steering(None);
+        assert_eq!(s.reuse_prefix(&[1, 2, 3]), 0);
+    }
+
+    fn steer_file() -> super::super::steer::SteerFile {
+        use super::super::steer::*;
+        let e = SteerEntry { hook: Hook::Resid, layer: 0, op: SteerOp::Add, scale: 1.0, vector: vec![1.0; 4] };
+        SteerFile { name: "t".into(), hidden_size: 4, entries: vec![e], ..Default::default() }
     }
 }
