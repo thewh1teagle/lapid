@@ -141,3 +141,14 @@ fn mxfp4_matmul_id() {
         check(&format!("matmul_id mxfp4 t{t} r{r} e{e} n{n} k{k}"), &got, &want, tol);
     }
 }
+
+/// The routed GEMM path over many experts (an expert cache's pool of slots), ids spread
+/// over the whole range.
+#[test]
+fn mxfp4_matmul_id_many_experts() {
+    let Some(be) = cuda() else { return };
+    let (t, r, e, n, k) = (70, 4, 5000, 40, 64);
+    let ids: Vec<i32> = (0..t * r).map(|i| ((i * 997 + 13) % e) as i32).collect();
+    let (got, want) = run_id(&be, DType::F32, (t, r, e, n, k), &ids);
+    check(&format!("matmul_id mxfp4 t{t} r{r} e{e} n{n} k{k}"), &got, &want, 2e-3);
+}

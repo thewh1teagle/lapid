@@ -19,8 +19,10 @@ use super::{Key, Params, Plan, bad, check_plain, gemv, grid1, matmul, mma, quant
 use crate::context::Caps;
 
 const ROUTE: &str = include_str!("../kernels/moe_route.ptx");
-/// Most experts the routed GEMM path handles (shared counters of the routing block).
-const MAX_E: usize = 2048;
+/// Most experts the routed GEMM path handles: two shared `u32` counters per expert in the
+/// routing block, 48 KiB (the static shared memory limit). Expert caches index a pool of
+/// slots as the experts (e.g. ~4500 slots of DeepSeek V4.1 experts on a 128 GB GB10).
+const MAX_E: usize = 6144;
 /// Most (token, slot) rows served by the GEMV variant regardless of t.
 const GEMV_MAX_ROWS: usize = 32;
 
