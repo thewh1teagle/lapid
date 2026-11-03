@@ -66,6 +66,10 @@ kernel serves every shape: e.g. a growing KV cache never recompiles.
 
 - **`.lapid` files:** header, section table, JSON metadata (identity, license, source, model config),
   tensor index and 256-byte-aligned tensor data with per-tensor hashes. Loaded by mmap, zero copy.
+- **Weight residency:** weights are copied to the device once (default when the model fits), or
+  read in place from the mmap (`--mmap`, `LAPID_MMAP=1`; automatic when the model does not fit):
+  the page cache streams them from disk. GPUs that read host memory through the host page tables
+  get the host pointer; the pages a GPU eval reads are re-mapped and locked around it.
 - **Quantization:** `int8` / `int4` with a per-block scale; block size is an attribute of the tensor.
 - **Import:** generic readers (safetensors, …); each model's conversion lives with the model.
 
