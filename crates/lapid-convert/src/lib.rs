@@ -29,7 +29,7 @@ mod source;
 pub mod transforms;
 pub mod writer;
 
-pub use hf::{download_hf, download_hf_optional};
+pub use hf::{download_hf, download_hf_optional, hf_api};
 
 /// Output weight precision. CLI names "fp32", "fp16", "int8", "int4", "q4_k", "q5_k",
 /// "q6_k" and "q4_k_m" (llama.cpp's Q4_K_M mix; see `policy`).

@@ -1495,7 +1495,6 @@ dependencies = [
  "lapid-nn",
  "mime_guess",
  "rust-embed",
- "rustls-rustcrypto",
  "serde",
  "serde_json",
  "tokio",
@@ -1503,7 +1502,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]

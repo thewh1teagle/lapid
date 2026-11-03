@@ -7,13 +7,11 @@ license.workspace = true
 
 [features]
 default = ["download"]
-# `-hf owner/repo[:QUANT]` repo listing (HTTP); downloads themselves go through lapid-convert.
-download = ["dep:ureq", "dep:rustls-rustcrypto", "lapid-hub/download"]
+# `-hf owner/repo[:QUANT]`: repo listing and downloads (HTTP through lapid-convert).
+download = ["lapid-hub/download"]
 
 [dependencies]
 clap.workspace = true
-ureq = { workspace = true, optional = true }
-rustls-rustcrypto = { workspace = true, optional = true }
 lapid.workspace = true
 lapid-hub = { workspace = true, default-features = false }
 lapid-convert.workspace = true

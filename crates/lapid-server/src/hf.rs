@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lapid::{Error, Result, bail};
+use lapid::{Result, bail};
 
 /// Split `owner/repo[:QUANT]`.
 pub fn split_tag(spec: &str) -> (&str, Option<&str>) {
@@ -90,54 +90,16 @@ pub fn resolve_hf(spec: &str) -> Result<String> {
     }
 }
 
-#[cfg(feature = "download")]
+/// The repo's files (`api/models/{repo}`), through lapid-convert's HF client (endpoint,
+/// token, and the fallback when HF rejects a stale token).
 fn list_repo(repo: &str) -> Result<Vec<String>> {
-    use std::sync::Arc;
-    use ureq::tls::{TlsConfig, TlsProvider};
-    let tls = TlsConfig::builder()
-        .provider(TlsProvider::Rustls)
-        .unversioned_rustls_crypto_provider(Arc::new(rustls_rustcrypto::provider()))
-        .build();
-    let agent = ureq::Agent::config_builder().tls_config(tls).build().new_agent();
-    let endpoint = std::env::var("HF_ENDPOINT").ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "https://huggingface.co".into());
-    let url = format!("{endpoint}/api/models/{repo}");
-    let mut req = agent.get(url.as_str()).header("User-Agent", concat!("lapid/", env!("CARGO_PKG_VERSION")));
-    if let Some(t) = token() {
-        req = req.header("Authorization", format!("Bearer {t}"));
-    }
-    let resp = req.call().map_err(|e| Error::new("http", format!("{url}: {e}")))?;
-    let body = resp.into_body().read_to_string().map_err(|e| Error::new("http", format!("{url}: {e}")))?;
+    let body = lapid_convert::hf_api(&format!("api/models/{repo}"))?;
     let v: serde_json::Value = serde_json::from_str(&body)?;
     let files = v["siblings"]
         .as_array()
         .map(|s| s.iter().filter_map(|f| f["rfilename"].as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     Ok(files)
-}
-
-#[cfg(not(feature = "download"))]
-fn list_repo(repo: &str) -> Result<Vec<String>> {
-    Err(Error::new("download_disabled", format!("cannot list {repo}: built without downloads")))
-}
-
-/// HF token: `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN`, else `$HF_HOME/token` or
-/// `~/.cache/huggingface/token` (the same lookup as the hub downloads).
-#[cfg(feature = "download")]
-fn token() -> Option<String> {
-    for k in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"] {
-        if let Ok(t) = std::env::var(k)
-            && !t.trim().is_empty()
-        {
-            return Some(t.trim().to_string());
-        }
-    }
-    let path = match std::env::var("HF_HOME") {
-        Ok(h) if !h.is_empty() => PathBuf::from(h).join("token"),
-        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".cache/huggingface/token"),
-    };
-    let t = std::fs::read_to_string(path).ok()?;
-    let t = t.trim();
-    (!t.is_empty()).then(|| t.to_string())
 }
 
 pub use lapid_hub::runtime::resolve::dtype_for_gguf;

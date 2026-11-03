@@ -44,6 +44,12 @@ pub fn download_hf(repo: &str, file: &str) -> Result<PathBuf> {
     Ok(dest)
 }
 
+/// GET a Hugging Face Hub API path (e.g. `api/models/{repo}`) as text, with the same
+/// endpoint (`HF_ENDPOINT`) and token handling as the downloads.
+pub fn hf_api(path: &str) -> Result<String> {
+    net::api(path)
+}
+
 /// Download, treating 404 as "absent" (`Ok(None)`).
 pub fn download_hf_optional(repo: &str, file: &str) -> Result<Option<PathBuf>> {
     match download_hf(repo, file) {
@@ -138,12 +144,44 @@ mod net {
         })
     }
 
+    /// GET `url` with the HF token when there is one. A token Hugging Face rejects (401:
+    /// expired or revoked; public repos would work without it) is dropped with a warning and
+    /// the request is sent again without it.
+    pub(super) fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>> {
+        static REJECTED: OnceLock<()> = OnceLock::new();
+        let send = |auth: bool| {
+            let mut req = agent().get(url).header("User-Agent", concat!("lapid/", env!("CARGO_PKG_VERSION")));
+            if let Some(t) = token().filter(|_| auth) {
+                req = req.header("Authorization", format!("Bearer {t}"));
+            }
+            req.call()
+        };
+        let with_token = token().is_some() && REJECTED.get().is_none();
+        match send(with_token) {
+            Err(ureq::Error::StatusCode(401)) if with_token => {
+                if REJECTED.set(()).is_ok() {
+                    eprintln!(
+                        "lapid: Hugging Face rejected your access token (expired or revoked? from HF_TOKEN or ~/.cache/huggingface/token); continuing without it"
+                    );
+                }
+                send(false).map_err(|e| http_error(url, e))
+            }
+            r => r.map_err(|e| http_error(url, e)),
+        }
+    }
+
+    /// GET an HF API path (`api/models/{repo}`) as text.
+    pub(super) fn api(path: &str) -> Result<String> {
+        let url = format!("{}/{path}", endpoint());
+        get(&url)?.into_body().read_to_string().map_err(|e| Error::new("http", format!("{url}: {e}")))
+    }
+
     fn http_error(url: &str, e: ureq::Error) -> Error {
         match e {
             ureq::Error::StatusCode(404) => Error::new("not_found", format!("{url}: 404 not found")),
             ureq::Error::StatusCode(c @ (401 | 403)) => Error::new(
                 "unauthorized",
-                format!("{url}: HTTP {c} (gated or private repo? set HF_TOKEN)"),
+                format!("{url}: HTTP {c} (gated or private repo? set HF_TOKEN to a token with access)"),
             ),
             ureq::Error::StatusCode(c) => Error::new("http", format!("{url}: HTTP {c}")),
             ureq::Error::Io(io) => Error::new("io", format!("{url}: {io}")),
@@ -156,11 +194,7 @@ mod net {
         let dir = dest.parent().ok_or_else(|| Error::new("io", "cache path has no parent"))?;
         std::fs::create_dir_all(dir).map_err(|e| Error::new("io", format!("create {}: {e}", dir.display())))?;
         let url = format!("{}/{repo}/resolve/main/{file}", endpoint());
-        let mut req = agent().get(url.as_str()).header("User-Agent", concat!("lapid/", env!("CARGO_PKG_VERSION")));
-        if let Some(t) = token() {
-            req = req.header("Authorization", format!("Bearer {t}"));
-        }
-        let resp = req.call().map_err(|e| http_error(&url, e))?;
+        let resp = get(&url)?;
         let total = resp.body().content_length();
         let mut reader = resp.into_body().into_reader();
 
@@ -215,6 +249,10 @@ mod net {
     use std::path::Path;
 
     use lapid_tensor::{Error, Result};
+
+    pub(super) fn api(path: &str) -> Result<String> {
+        Err(Error::new("download_disabled", format!("cannot read {path}: lapid was built without the \"download\" feature")))
+    }
 
     pub(super) fn fetch(repo: &str, file: &str, dest: &Path) -> Result<()> {
         Err(Error::new(
