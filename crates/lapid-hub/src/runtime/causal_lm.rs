@@ -136,6 +136,18 @@ pub trait CausalLm: Sized + Send + Sync + 'static {
     fn template_globals(&self) -> Vec<(&'static str, Value)> {
         Vec::new()
     }
+    /// Whether a built-in speculative draft head is loaded ([`draft`](Self::draft)).
+    fn can_draft(&self) -> bool {
+        false
+    }
+    /// Up to `n_max` draft tokens after `anchor`, the sampled token at position
+    /// `state.offset()` (not yet fed), from what `state` holds of the fed tokens; the draft
+    /// stops at the first position whose confidence is below `p_min`. The state must
+    /// [`truncate`](super::session::LmState::truncate) back over a verify forward of
+    /// `n_max + 1` tokens.
+    fn draft(&self, _state: &mut Self::State, _anchor: u32, _n_max: usize, _p_min: f32) -> Result<Vec<u32>> {
+        Ok(Vec::new())
+    }
     /// Own prompt format instead of the stored Jinja template (messages / tools as JSON), e.g.
     /// DeepSeek V4's `encoding_dsv4`; `None` = render the template.
     fn render_prompt(&self, _messages_json: &str, _tools_json: Option<&str>, _add_generation_prompt: bool, _opts: &ChatOptions) -> Option<Result<String>> {
@@ -344,6 +356,10 @@ impl<M: CausalLm> Llm<M> {
     pub fn generate<'a>(&'a self, session: &'a mut Session<M::State>, prompt: &[u32], opts: GenerateOptions) -> Result<TokenStream<'a>> {
         let cached = session.reuse_prefix(prompt);
         let (model, device) = (&self.model, &self.device);
+        if let Some(cfg) = super::spec::spec().filter(|_| model.can_draft()) {
+            let spec = super::spec::LmSpec { model, device, session, p_min: cfg.p_min, last: 0 };
+            return TokenStream::speculative(Box::new(spec), cfg.n_max, &self.text.tokenizer, prompt, cached, opts, &self.text.stop);
+        }
         let steering = session.steering.clone();
         let step_fn = move |ids: &[u32]| -> Result<Vec<f32>> {
             let logits = step(model, device, ids, &mut session.state, steering.as_ref())?;

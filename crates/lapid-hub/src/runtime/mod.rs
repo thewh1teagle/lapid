@@ -33,6 +33,7 @@ pub mod resolve;
 pub mod seq2seq;
 pub mod serve;
 pub mod session;
+pub mod spec;
 pub mod steer;
 pub mod transducer;
 pub mod tts;
