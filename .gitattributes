@@ -2,3 +2,5 @@
 *.wgsl text eol=lf
 *.metal text eol=lf
 *.ptx text eol=lf
+# Chat template fixtures are compared byte for byte.
+crates/lapid-hub/src/*/testdata/** -text

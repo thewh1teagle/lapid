@@ -210,7 +210,7 @@ fn synth_generate() {
     let _ = std::fs::remove_file(&tiny);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn drop_page_cache(path: &std::path::Path) {
     use std::os::fd::AsRawFd;
     unsafe extern "C" {
@@ -231,7 +231,7 @@ fn env_f(k: &str, d: f64) -> f64 {
 #[ignore]
 fn synth_bench() {
     let Some(path) = synth_path() else { return };
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     if env_f("LAPID_DS41_COLD", 0.0) > 0.0 {
         drop_page_cache(&path);
     }
