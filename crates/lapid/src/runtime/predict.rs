@@ -441,7 +441,7 @@ mod tests {
             let mut outs = step(&cache, n);
             let c = n.div_ceil(2);
             let kv = cache.slice(1, 0, c).unwrap().permute(&[0, 2, 1, 3]).unwrap();
-            let q = Tensor::from_f32(&vec![0.5; 16], &[1, 2, 1, 8]).unwrap();
+            let q = Tensor::from_f32(&[0.5; 16], &[1, 2, 1, 8]).unwrap();
             outs.push(Tensor::attention(&q, &kv, &kv, None, 0.3, false).unwrap());
             let refs: Vec<&Tensor> = outs.iter().collect();
             let key = GraphKey::new(&refs);
