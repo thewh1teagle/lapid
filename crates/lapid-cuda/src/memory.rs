@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use lapid_tensor::{DeviceBuffer, DeviceData, Error, Result};
+use lapid_tensor::{DeviceBuffer, DeviceData, Error, HostData, Result};
 
 use crate::context::Ctx;
 use crate::driver::{self, CUdeviceptr, CUevent, CUstream, Driver};
@@ -56,12 +56,22 @@ impl Pool {
 }
 
 /// A device allocation. Dropping it returns the memory to the device's pool.
+///
+/// Or a *mapped* view of host bytes (`CudaBuffer::map`): the device address is the host
+/// address (pageable memory access through the host page tables), the `HostData` is kept
+/// alive, nothing is ever freed, and kernels never write it (`execute` refuses it as an
+/// output).
 pub struct CudaBuffer {
     ptr: CUdeviceptr,
     len: usize,
     class: usize,
     ctx: Arc<Ctx>,
+    host: Option<HostData>,
 }
+
+/// Alignment `cuMemAlloc` guarantees and kernels may assume (vector loads); `.lapid`
+/// tensor data is 256-byte aligned in a page-aligned mmap.
+const MAP_ALIGN: usize = 256;
 
 impl CudaBuffer {
     pub(crate) fn alloc(ctx: &Arc<Ctx>, len: usize) -> Result<CudaBuffer> {
@@ -71,6 +81,7 @@ impl CudaBuffer {
                 len: 0,
                 class: 0,
                 ctx: ctx.clone(),
+                host: None,
             });
         }
         let class = size_class(len);
@@ -109,7 +120,29 @@ impl CudaBuffer {
             len,
             class,
             ctx: ctx.clone(),
+            host: None,
         })
+    }
+
+    /// Zero-copy view of `host` when the device reads pageable host memory in place and
+    /// the bytes are non-empty and 256-byte aligned; `None` otherwise (upload instead).
+    pub(crate) fn map(ctx: &Arc<Ctx>, host: &HostData) -> Option<CudaBuffer> {
+        let b = host.bytes();
+        let addr = b.as_ptr() as usize;
+        if !ctx.host_access || b.is_empty() || !addr.is_multiple_of(MAP_ALIGN) {
+            return None;
+        }
+        Some(CudaBuffer { ptr: addr as CUdeviceptr, len: b.len(), class: 0, ctx: ctx.clone(), host: Some(host.clone()) })
+    }
+
+    /// True for a zero-copy view of host memory (device address = host address).
+    pub fn is_mapped(&self) -> bool {
+        self.host.is_some()
+    }
+
+    /// The borrowed host bytes of a mapped buffer.
+    pub(crate) fn mapped_bytes(&self) -> Option<&[u8]> {
+        self.host.as_ref().map(HostData::bytes)
     }
 
     /// Device address.
@@ -128,7 +161,8 @@ impl CudaBuffer {
 
 impl Drop for CudaBuffer {
     fn drop(&mut self) {
-        if self.class == 0 {
+        // Zero-sized and mapped buffers own no device memory.
+        if self.class == 0 || self.host.is_some() {
             return;
         }
         if let Ok(mut pool) = self.ctx.pool.lock()

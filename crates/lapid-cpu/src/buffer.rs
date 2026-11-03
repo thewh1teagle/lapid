@@ -13,6 +13,11 @@
 //! 4. Every view is bounds-checked against the buffer length before any access.
 //! 5. `upload` / `download` / `alloc` never run concurrently with `execute` on the same
 //!    buffer (the runtime owns that ordering).
+//!
+//! A *mapped* buffer ([`CpuBuffer::map`]) borrows host bytes instead (e.g. weights in a
+//! read-only mmap of a `.lapid` file): it keeps the `HostData` alive, is never written
+//! (`dst` refuses it, so no kernel can take it as an output) and is 64-byte aligned like
+//! every other buffer (`map` declines anything else).
 
 use std::alloc::{self, Layout};
 use std::any::Any;
@@ -20,7 +25,7 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
-use lapid_tensor::{DType, DeviceBuffer, Error, Result};
+use lapid_tensor::{DType, DeviceBuffer, Error, HostData, Result};
 use half::{bf16, f16};
 
 use crate::typed::{Dst, Src};
@@ -30,9 +35,15 @@ pub(crate) const BUFFER_ALIGN: usize = 64;
 pub struct CpuBuffer {
     ptr: NonNull<u8>,
     len: usize,
-    layout: Layout,
-    /// Large allocations return here on drop (see `Recycler`).
-    recycler: Option<Arc<Recycler>>,
+    store: Store,
+}
+
+/// Who owns the bytes behind `ptr`.
+enum Store {
+    /// Our own allocation with this layout; large ones return to the recycler on drop.
+    Heap { layout: Layout, recycler: Option<Arc<Recycler>> },
+    /// Borrowed, read-only host bytes kept alive by this handle.
+    Mapped(#[allow(dead_code)] HostData),
 }
 
 /// Allocations from this size up are recycled instead of freed.
@@ -113,7 +124,7 @@ impl CpuBuffer {
         let raw = unsafe { alloc::alloc_zeroed(layout) };
         let ptr = NonNull::new(raw)
             .ok_or_else(|| Error::new("out_of_memory", format!("failed to allocate {len} bytes")))?;
-        Ok(CpuBuffer { ptr, len, layout, recycler: None })
+        Ok(CpuBuffer { ptr, len, store: Store::Heap { layout, recycler: None } })
     }
 
     /// Buffer of `len` bytes with UNSPECIFIED (but initialized) contents: large sizes are
@@ -133,7 +144,7 @@ impl CpuBuffer {
                 NonNull::new(raw).ok_or_else(|| Error::new("out_of_memory", format!("failed to allocate {len} bytes")))?
             }
         };
-        Ok(CpuBuffer { ptr, len, layout, recycler: Some(rec.clone()) })
+        Ok(CpuBuffer { ptr, len, store: Store::Heap { layout, recycler: Some(rec.clone()) } })
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<CpuBuffer> {
@@ -141,6 +152,23 @@ impl CpuBuffer {
         // SAFETY: fresh allocation of at least bytes.len() bytes, not shared yet.
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.ptr.as_ptr(), bytes.len()) };
         Ok(b)
+    }
+
+    /// Zero-copy, read-only view of `host` (e.g. an mmap'd weight). `None` when the bytes
+    /// are empty or not 64-byte aligned (kernels assume that alignment): copy them instead.
+    pub fn map(host: &HostData) -> Option<CpuBuffer> {
+        let bytes = host.bytes();
+        if bytes.is_empty() || !(bytes.as_ptr() as usize).is_multiple_of(BUFFER_ALIGN) {
+            return None;
+        }
+        // Only ever read through shared slices (`dst` refuses mapped buffers).
+        let ptr = NonNull::new(bytes.as_ptr().cast_mut())?;
+        Some(CpuBuffer { ptr, len: bytes.len(), store: Store::Mapped(host.clone()) })
+    }
+
+    /// True for a [`CpuBuffer::map`] view (read-only).
+    pub fn is_mapped(&self) -> bool {
+        matches!(self.store, Store::Mapped(_))
     }
 
     pub fn len(&self) -> usize {
@@ -189,6 +217,9 @@ impl CpuBuffer {
 
     /// Raw output handle (plain dtypes only).
     pub(crate) fn dst(&self, dtype: DType) -> Result<Dst> {
+        if self.is_mapped() {
+            return Err(Error::new("read_only_buffer", "cpu: a mapped (host-borrowed) buffer cannot be written"));
+        }
         if dtype.is_quant() {
             return Err(Error::new(
                 "unsupported_dtype",
@@ -201,12 +232,13 @@ impl CpuBuffer {
 
 impl Drop for CpuBuffer {
     fn drop(&mut self) {
-        if let Some(r) = &self.recycler
-            && r.give(self.ptr, self.layout.size()) {
+        let Store::Heap { layout, recycler } = &self.store else { return };
+        if let Some(r) = recycler
+            && r.give(self.ptr, layout.size()) {
                 return;
             }
         // SAFETY: allocated in `zeroed` / `recycled` with exactly this layout.
-        unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
+        unsafe { alloc::dealloc(self.ptr.as_ptr(), *layout) };
     }
 }
 
@@ -252,5 +284,32 @@ mod tests {
         assert_eq!(s.len(), 3);
         assert_eq!(s.get(1), 2.5);
         assert!(unsafe { b.src(DType::Int8) }.is_err());
+    }
+
+    #[test]
+    fn mapped_is_zero_copy_and_read_only() {
+        // A 64-aligned backing store (a CpuBuffer), viewed as host data.
+        let owner = CpuBuffer::from_bytes(&(0..256u32).map(|i| i as u8).collect::<Vec<_>>()).unwrap();
+        struct View(CpuBuffer, usize, usize);
+        impl AsRef<[u8]> for View {
+            fn as_ref(&self) -> &[u8] {
+                let b = unsafe { self.0.bytes() };
+                &b[self.1..self.2]
+            }
+        }
+        let host = HostData::new(Arc::new(View(owner, 64, 192)));
+        let m = CpuBuffer::map(&host).expect("aligned");
+        assert!(m.is_mapped());
+        assert_eq!(m.as_ptr() as *const u8, host.bytes().as_ptr());
+        assert_eq!(unsafe { m.bytes() }, host.bytes());
+        assert_eq!(unsafe { m.src(DType::F32) }.unwrap().len(), 32);
+        assert_eq!(m.dst(DType::F32).unwrap_err().code, "read_only_buffer");
+        drop(m);
+        assert_eq!(host.bytes()[0], 64);
+        // Misaligned or empty: declined (the runtime copies instead).
+        let owner = CpuBuffer::from_bytes(&[7u8; 128]).unwrap();
+        let odd = HostData::new(Arc::new(View(owner, 1, 65)));
+        assert!(CpuBuffer::map(&odd).is_none());
+        assert!(CpuBuffer::map(&HostData::from_vec(Vec::new())).is_none());
     }
 }

@@ -101,6 +101,9 @@ pub(crate) struct Ctx {
     pub name: String,
     pub caps: Caps,
     pub integrated: bool,
+    /// Kernels can read pageable host memory through the host page tables (attributes 88
+    /// and 100): host bytes (e.g. an mmap'd file) are used in place by `map_host`.
+    pub host_access: bool,
     /// Freed device allocations, reused by size class.
     pub pool: Mutex<Pool>,
 }
@@ -228,12 +231,17 @@ pub(crate) fn shared_ctx(index: usize) -> Result<Arc<Ctx>> {
             ),
         ));
     }
+    // Older drivers may not know the attributes: treat errors as "no".
+    let host_access = drv.attr(dev, driver::ATTR_PAGEABLE_MEMORY_ACCESS).unwrap_or(0) == 1
+        && drv.attr(dev, driver::ATTR_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES).unwrap_or(0) == 1
+        && std::env::var("LAPID_CUDA_NO_HOST_MAP").map_or(true, |v| v.trim().is_empty() || v.trim() == "0");
     let c = Arc::new(Ctx {
         drv,
         ctx,
         name: info.name,
         caps,
         integrated: info.integrated,
+        host_access,
         pool: Mutex::new(Pool::default()),
     });
     g.insert(index, c.clone());

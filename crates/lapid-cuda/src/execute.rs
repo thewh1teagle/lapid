@@ -293,10 +293,13 @@ impl Exec {
         let host_t0 = std::time::Instant::now();
         ctx.bind()?;
         let drv = ctx.drv;
-        let ptrs: Vec<u64> = buffers
-            .iter()
-            .map(|d| as_cuda(d, ctx).map(|b| b.ptr()))
-            .collect::<Result<_>>()?;
+        let mut ptrs: Vec<u64> = Vec::with_capacity(buffers.len());
+        let mut mapped: Vec<bool> = Vec::with_capacity(buffers.len());
+        for d in buffers {
+            let b = as_cuda(d, ctx)?;
+            ptrs.push(b.ptr());
+            mapped.push(b.mapped_bytes().is_some());
+        }
 
         // plan every stage first (validates the whole schedule before anything runs)
         let mut items: Vec<Item> = Vec::with_capacity(launches.len());
@@ -331,6 +334,12 @@ impl Exec {
                 return Err(Error::new(
                     "bad_launch",
                     format!("launch {li}: buffer id {id} out of range"),
+                ));
+            }
+            if mapped[l.output] {
+                return Err(Error::new(
+                    "read_only_buffer",
+                    format!("launch {li}: output buffer {} is mapped host memory (read-only)", l.output),
                 ));
             }
             scratch_bytes = scratch_bytes.max(plan.scratch);

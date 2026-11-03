@@ -247,6 +247,10 @@ impl Backend for CpuBackend {
         Ok(Arc::new(CpuBuffer::from_bytes(bytes)?))
     }
 
+    fn map_host(&self, host: &lapid_tensor::HostData) -> Result<Option<DeviceData>> {
+        Ok(CpuBuffer::map(host).map(|b| Arc::new(b) as DeviceData))
+    }
+
     fn download(&self, buf: &DeviceData) -> Result<Vec<u8>> {
         let b = as_cpu(buf)?;
         // SAFETY: execute is synchronous, no kernel is writing this buffer now.

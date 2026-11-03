@@ -30,6 +30,10 @@ pub(crate) const ATTR_MAX_SHARED_MEMORY_PER_BLOCK: c_int = 8;
 pub(crate) const ATTR_MULTIPROCESSOR_COUNT: c_int = 16;
 pub(crate) const ATTR_INTEGRATED: c_int = 18;
 pub(crate) const ATTR_COMPUTE_CAPABILITY_MAJOR: c_int = 75;
+/// Kernels may dereference any pageable host pointer (HMM / ATS).
+pub(crate) const ATTR_PAGEABLE_MEMORY_ACCESS: c_int = 88;
+/// ... through the host's own page tables (coherent, no migration; e.g. GB10, Grace Hopper).
+pub(crate) const ATTR_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES: c_int = 100;
 pub(crate) const ATTR_COMPUTE_CAPABILITY_MINOR: c_int = 76;
 
 // CUjit_option
