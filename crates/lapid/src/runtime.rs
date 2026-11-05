@@ -243,7 +243,14 @@ impl Runtime {
             BufferSource::Device(d) => self.resolve_device(d)?,
             BufferSource::Temp { .. } => bail!("internal", "unbound temp buffer"),
             // Never hand a zero-byte allocation to a backend.
-            BufferSource::Output => self.backend.alloc(bytes.max(4))?,
+            BufferSource::Output => match self.backend.alloc(bytes.max(4)) {
+                Ok(b) => Ok(b),
+                Err(_) => {
+                    // Possibly out of memory: release every pooled buffer and retry once.
+                    self.pool.clear();
+                    self.backend.alloc(bytes.max(4))
+                }
+            }?,
         })
     }
 
@@ -350,7 +357,14 @@ impl Runtime {
                     Some(b) => b.clone(),
                     None => bail!("internal", "buffer {id} refers to missing temp slot {slot}"),
                 },
-                PlanSrc::Output => self.backend.alloc(b.bytes.max(4))?,
+                PlanSrc::Output => match self.backend.alloc(b.bytes.max(4)) {
+                    Ok(b) => Ok(b),
+                    Err(_) => {
+                        // Possibly out of memory: release every pooled buffer and retry once.
+                        self.pool.clear();
+                        self.backend.alloc(b.bytes.max(4))
+                    }
+                }?,
                 PlanSrc::Fixed(src) => self.resolve_source(src, b.bytes)?,
             };
             buffers.push(buf);
@@ -386,7 +400,14 @@ impl Runtime {
 
     pub(crate) fn alloc(&self, shape: &[usize], dtype: DType) -> Result<Tensor> {
         let bytes = storage_bytes(shape, dtype)?;
-        Ok(Tensor::from_device(self.backend.alloc(bytes.max(4))?, shape, dtype))
+        Ok(Tensor::from_device(match self.backend.alloc(bytes.max(4)) {
+            Ok(b) => Ok(b),
+            Err(_) => {
+                // Possibly out of memory: release every pooled buffer and retry once.
+                self.pool.clear();
+                self.backend.alloc(bytes.max(4))
+            }
+        }?, shape, dtype))
     }
 
     pub(crate) fn write(&self, t: &Tensor, offset: usize, bytes: &[u8]) -> Result<()> {
