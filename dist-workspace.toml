@@ -17,3 +17,7 @@ install-path = "CARGO_HOME"
 install-updater = false
 # release.yml is hand-tuned (tag pattern v* only, so c-v* tags are left to release-c.yml)
 allow-dirty = ["ci"]
+
+# GitHub no longer provisions macos-14 runners; build Apple Silicon on macos-15.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
