@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "lapid"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "half",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-c"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cbindgen",
  "lapid",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "half",
@@ -1501,14 +1501,14 @@ dependencies = [
 
 [[package]]
 name = "lapid-compiler"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lapid-tensor",
 ]
 
 [[package]]
 name = "lapid-convert"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-cpu"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "half",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-cuda"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "half",
  "lapid-compiler",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-format"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "lapid-tensor",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-hub"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "half",
  "image",
@@ -1576,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-metal"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "half",
  "lapid-compiler",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-nn"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "image",
  "lapid",
@@ -1602,14 +1602,14 @@ dependencies = [
 
 [[package]]
 name = "lapid-quant"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "half",
 ]
 
 [[package]]
 name = "lapid-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "audioadapter-buffers",
  "axum",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-tensor"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "half",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-verify"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lapid",
  "lapid-convert",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-vulkan"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ash",
  "bytemuck",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-web"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "js-sys",
  "lapid",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-webgpu"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "half",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "lapid-wgsl"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lapid-compiler",
  "lapid-quant",
