@@ -116,28 +116,75 @@ struct Keys {
     rows: Tensor,
     mask: Tensor,
     block: usize,
+    /// Block keys only: the first query sits `skew` queries into the first block of `rows`
+    /// (a sub-range of a chunk's queries that does not start on a block boundary).
+    skew: usize,
 }
 
-/// `[n, h, x]` viewed as `[nb, block * h, x]` (queries padded to whole blocks) and back.
-fn to_blocks(t: &Tensor, block: usize) -> Result<Tensor> {
+impl Keys {
+    /// These keys for the queries `i0..i1` only.
+    fn queries(&self, i0: usize, i1: usize) -> Result<Keys> {
+        debug_assert_eq!(self.skew, 0, "Keys::queries of a sub-range");
+        let mask = self.mask.slice(0, i0, i1)?;
+        Ok(if self.block > 0 {
+            let (c0, c1) = (i0 / self.block, i1.div_ceil(self.block));
+            Keys { rows: self.rows.slice(0, c0, c1)?, mask, block: self.block, skew: i0 % self.block }
+        } else if self.rows.rank() == 3 {
+            Keys { rows: self.rows.slice(0, i0, i1)?, mask, block: 0, skew: 0 }
+        } else {
+            Keys { rows: self.rows.clone(), mask, block: 0, skew: 0 }
+        })
+    }
+}
+
+/// `[n, h, x]` viewed as `[nb, block * h, x]` (queries padded to whole blocks, `skew` pad
+/// queries in front) and back.
+fn to_blocks(t: &Tensor, block: usize, skew: usize) -> Result<Tensor> {
     let (n, h, x) = (t.shape()[0], t.shape()[1], t.shape()[2]);
-    let nb = n.div_ceil(block);
-    t.pad(0, 0, nb * block - n, 0.0)?.reshape(&[nb, block * h, x])
+    let nb = (skew + n).div_ceil(block);
+    t.pad(0, skew, nb * block - skew - n, 0.0)?.reshape(&[nb, block * h, x])
 }
 
-fn from_blocks(t: &Tensor, n: usize, h: usize) -> Result<Tensor> {
+fn from_blocks(t: &Tensor, n: usize, h: usize, skew: usize) -> Result<Tensor> {
     let (nb, bh, x) = (t.shape()[0], t.shape()[1], t.shape()[2]);
-    t.reshape(&[nb * bh / h, h, x])?.slice(0, 0, n)
+    t.reshape(&[nb * bh / h, h, x])?.slice(0, skew, skew + n)
 }
 
 /// Attention with per-head sinks over several key sets (K = V): `q [n, H, hd]` -> `[n, H, hd]`.
+///
+/// The scores of one query take `H * keys` f32 and every copy of them (matmul output, mask,
+/// concat, softmax) is alive at once: on a long context a 2048-token chunk would need
+/// several GiB per layer, and its matmul output past 2^32 elements (32k tokens at ratio 1)
+/// is beyond 32-bit indexing. So the queries go through in blocks (see `super::score_budget`);
+/// each query's softmax is independent, so the result is the same.
 fn sink_attention(q: &Tensor, parts: &[Keys], sinks: &Tensor) -> Result<Tensor> {
+    let h = q.shape()[1];
+    let keys = parts.iter().map(|k| k.mask.shape()[1]).sum::<usize>() + 1;
+    sink_attention_blocked(q, parts, sinks, (super::score_budget() / (h * keys).max(1)).max(1))
+}
+
+/// [`sink_attention`] over at most `qb` queries at a time.
+fn sink_attention_blocked(q: &Tensor, parts: &[Keys], sinks: &Tensor, qb: usize) -> Result<Tensor> {
+    let n = q.shape()[0];
+    if qb >= n {
+        return sink_attention_block(q, parts, sinks);
+    }
+    let mut outs = Vec::with_capacity(n.div_ceil(qb));
+    for i0 in (0..n).step_by(qb) {
+        let i1 = (i0 + qb).min(n);
+        let sub = parts.iter().map(|k| k.queries(i0, i1)).collect::<Result<Vec<_>>>()?;
+        outs.push(sink_attention_block(&q.slice(0, i0, i1)?, &sub, sinks)?);
+    }
+    Tensor::cat(&outs.iter().collect::<Vec<_>>(), 0)
+}
+
+fn sink_attention_block(q: &Tensor, parts: &[Keys], sinks: &Tensor) -> Result<Tensor> {
     let (n, h, hd) = (q.shape()[0], q.shape()[1], q.shape()[2]);
     let scale = 1.0 / (hd as f64).sqrt();
     let mut logits = Vec::with_capacity(parts.len() + 1);
     for k in parts {
         let l = if k.block > 0 {
-            from_blocks(&to_blocks(q, k.block)?.matmul_t(&k.rows)?, n, h)?
+            from_blocks(&to_blocks(q, k.block, k.skew)?.matmul_t(&k.rows)?, n, h, k.skew)?
         } else if k.rows.rank() == 2 {
             q.reshape(&[n * h, hd])?.matmul_t(&k.rows)?.reshape(&[n, h, k.rows.shape()[0]])?
         } else {
@@ -154,7 +201,7 @@ fn sink_attention(q: &Tensor, parts: &[Keys], sinks: &Tensor) -> Result<Tensor> 
         let pk = p.slice(2, at, at + len)?;
         at += len;
         let o = if k.block > 0 {
-            from_blocks(&to_blocks(&pk, k.block)?.matmul(&k.rows)?, n, h)?
+            from_blocks(&to_blocks(&pk, k.block, k.skew)?.matmul(&k.rows)?, n, h, k.skew)?
         } else if k.rows.rank() == 2 {
             pk.reshape(&[n * h, len])?.matmul(&k.rows)?.reshape(&[n, h, hd])?
         } else {
@@ -197,12 +244,12 @@ impl Attention {
         }
         let sel = shared.selection.clone().unwrap_or(Selection::Visible);
         Ok(Some(match sel {
-            Selection::Visible => Keys { rows: comp.rows, mask: host_mask(n, total, |i, j| j < lens[i])?, block: 0 },
-            Selection::Mask(mask) => Keys { rows: comp.rows, mask, block: 0 },
+            Selection::Visible => Keys { rows: comp.rows, mask: host_mask(n, total, |i, j| j < lens[i])?, block: 0, skew: 0 },
+            Selection::Mask(mask) => Keys { rows: comp.rows, mask, block: 0, skew: 0 },
             Selection::Gather { idx, mask } => {
                 let k = idx.shape()[1];
                 let rows = comp.rows.gather(&idx.reshape(&[n * k])?)?.reshape(&[n, k, comp.rows.shape()[1]])?;
-                Keys { rows, mask, block: 0 }
+                Keys { rows, mask, block: 0, skew: 0 }
             }
         }))
     }
@@ -233,7 +280,7 @@ impl Attention {
             None => kv,
         };
         let mask = Tensor::zeros(&[b, rows.shape()[0]], DType::F32);
-        let o = sink_attention(&q, &[Keys { rows, mask, block: 0 }], &self.sinks)?;
+        let o = sink_attention(&q, &[Keys { rows, mask, block: 0, skew: 0 }], &self.sinks)?;
         let o = self.rope.apply(&o, &cos, &sin, true)?;
         grouped_output(&o, &self.wo_a, self.wo_a_act_quant, &self.wo_b, self.groups)
     }
@@ -281,9 +328,9 @@ impl Attention {
             let idx: Vec<i32> = (0..nb).flat_map(|c| (0..kb).map(move |t| (c, t))).map(|(c, t)| row(c, t).unwrap_or(0) as i32).collect();
             let rows = raw.gather(&Tensor::from_i32(&idx, &[nb * kb])?)?.reshape(&[nb, kb, hd])?;
             let mask = host_mask(n, kb, |i, t| row(i / b, t).is_some_and(|j| visible(i, j)))?;
-            Keys { rows, mask, block: b }
+            Keys { rows, mask, block: b, skew: 0 }
         } else {
-            Keys { rows: raw, mask: host_mask(n, s_raw, visible)?, block: 0 }
+            Keys { rows: raw, mask: host_mask(n, s_raw, visible)?, block: 0, skew: 0 }
         };
         let mut parts = vec![window];
         if self.ratio > 0
@@ -295,5 +342,105 @@ impl Attention {
         let o = self.rope.apply(&o, &cos, &sin, true)?;
         let out = grouped_output(&o, &self.wo_a, self.wo_a_act_quant, &self.wo_b, self.groups)?;
         Ok((out, next))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lapid::Device;
+
+    use super::*;
+    use crate::deepseek4::model::compress::NEG;
+
+    /// Deterministic values in `[-1, 1)` (splitmix64).
+    fn rand(n: usize, seed: u64) -> Vec<f32> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = x;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                (z >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    fn tensor(shape: &[usize], seed: u64) -> Tensor {
+        Tensor::from_f32(&rand(shape.iter().product(), seed), shape).unwrap()
+    }
+
+    /// Additive mask `[n, s]`: some entries off, every row keeps most.
+    fn mask(n: usize, s: usize, salt: usize) -> Tensor {
+        let m: Vec<f32> = (0..n * s).map(|k| if (k / s * 7 + k % s * 3 + salt) % 5 == 0 { NEG } else { 0.0 }).collect();
+        Tensor::from_f32(&m, &[n, s]).unwrap()
+    }
+
+    fn vals(t: &Tensor) -> Vec<f32> {
+        Device::cpu().to_vec_f32(t).unwrap()
+    }
+
+    /// The three kinds of keys a layer passes: a window per block of `b` queries, shared
+    /// compressed rows, and rows gathered per query.
+    fn window(n: usize, hd: usize, b: usize) -> Keys {
+        let (nb, kb) = (n.div_ceil(b), 2 * b - 1);
+        Keys { rows: tensor(&[nb, kb, hd], 1), mask: mask(n, kb, 0), block: b, skew: 0 }
+    }
+    fn shared(n: usize, hd: usize, t: usize) -> Keys {
+        Keys { rows: tensor(&[t, hd], 2), mask: mask(n, t, 1), block: 0, skew: 0 }
+    }
+    fn gathered(n: usize, hd: usize, k: usize) -> Keys {
+        Keys { rows: tensor(&[n, k, hd], 3), mask: mask(n, k, 2), block: 0, skew: 0 }
+    }
+
+    /// Every block size gives the unblocked result, including sizes that start a sub-range
+    /// in the middle of a window block.
+    fn check(n: usize, h: usize, hd: usize, parts: &[Keys]) {
+        let q = tensor(&[n, h, hd], 4);
+        let sinks = tensor(&[1, h, 1], 5);
+        let want = vals(&sink_attention_block(&q, parts, &sinks).unwrap());
+        assert_eq!(want.len(), n * h * hd);
+        for qb in (1..=n + 1).chain([n * 3]) {
+            let got = vals(&sink_attention_blocked(&q, parts, &sinks, qb).unwrap());
+            assert_eq!(got.len(), want.len(), "qb {qb}");
+            let worst = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert!(worst < 1e-5, "n {n} qb {qb}: max diff {worst}");
+        }
+    }
+
+    #[test]
+    fn blocked_window_and_shared_rows() {
+        check(11, 3, 8, &[window(11, 8, 4), shared(11, 8, 13)]);
+    }
+
+    #[test]
+    fn blocked_window_and_gathered_rows() {
+        check(11, 3, 8, &[window(11, 8, 4), gathered(11, 8, 5)]);
+    }
+
+    #[test]
+    fn blocked_all_kinds_and_partial_blocks() {
+        check(10, 2, 8, &[window(10, 8, 4), shared(10, 8, 9), gathered(10, 8, 3)]);
+        check(3, 2, 8, &[window(3, 8, 4), shared(3, 8, 6)]); // fewer queries than a block
+        check(8, 2, 8, &[window(8, 8, 4), shared(8, 8, 6)]); // whole blocks
+    }
+
+    #[test]
+    fn blocked_without_a_window() {
+        check(7, 3, 8, &[shared(7, 8, 12)]); // a DSpark stage: one key set
+    }
+
+    /// The default block size keeps one score tensor under the 32-bit launch limit for any
+    /// context a model can have (1M positions, ratio 1, 64 heads).
+    #[test]
+    fn default_block_fits_32_bit_indexing() {
+        let (h, budget) = (64usize, super::super::score_budget());
+        for keys in [1usize << 10, 33_000, 1 << 17, 1 << 20] {
+            let qb = (budget / (h * keys)).max(1);
+            assert!(qb * h * keys < 1 << 32, "keys {keys}: qb {qb}");
+        }
+        // The case that failed: a 2048-token chunk at 32.5k context.
+        assert!((budget / (h * 32_800)).max(1) < 2048);
     }
 }

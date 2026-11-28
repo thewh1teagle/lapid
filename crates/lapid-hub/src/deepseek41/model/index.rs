@@ -39,6 +39,22 @@ pub(crate) fn visible_lens(pos: usize, n: usize, ratio: usize) -> Vec<usize> {
     (pos..pos + n).map(|p| (p + 1) / ratio).collect()
 }
 
+/// `sum_h w_h relu(q_h . key_t)` -> `[n, T]` from `q [n * h, d]`, `w [n, h]`, `keys [T, d]`,
+/// `qb` queries at a time: the `[qb * h, T]` products are the big tensors here (2048 * 32 *
+/// context / ratio f32 for a prompt chunk).
+pub(crate) fn weighted_scores(q: &Tensor, w: &Tensor, keys: &Tensor, h: usize, qb: usize) -> Result<Tensor> {
+    let (n, t) = (w.shape()[0], keys.shape()[0]);
+    let block = |i0: usize, i1: usize| -> Result<Tensor> {
+        let s = ops::relu(&q.slice(0, i0 * h, i1 * h)?.matmul_t(keys)?)?.reshape(&[i1 - i0, h, t])?;
+        s.mul(&w.slice(0, i0, i1)?.unsqueeze(2)?)?.sum(1, false)
+    };
+    if qb >= n {
+        return block(0, n);
+    }
+    let parts = (0..n).step_by(qb).map(|i0| block(i0, (i0 + qb).min(n))).collect::<Result<Vec<_>>>()?;
+    Tensor::cat(&parts.iter().collect::<Vec<_>>(), 0)
+}
+
 /// `[n, len]` 1 / 0 host tensor of `j < lens[i]`.
 fn below(lens: &[usize], len: usize) -> Result<Tensor> {
     let m: Vec<f32> = lens.iter().flat_map(|&l| (0..len).map(move |j| if j < l { 1.0 } else { 0.0 })).collect();
@@ -102,8 +118,7 @@ impl Indexer {
         let q = self.wq_b.forward(qr)?.cast(DType::F32)?.reshape(&[n, h, d])?;
         let q = rope.apply(&q, &cos, &sin, false)?.reshape(&[n * h, d])?;
         let w = self.weights_proj.forward(x)?.cast(DType::F32)?.mul_scalar(1.0 / ((d * h) as f64).sqrt())?; // [n, h]
-        let s = ops::relu(&q.matmul_t(keys)?)?.reshape(&[n, h, t])?;
-        let s = s.mul(&w.unsqueeze(2)?)?.sum(1, false)?; // [n, T]
+        let s = weighted_scores(&q, &w, keys, h, (super::score_budget() / (h * t).max(1)).max(1))?; // [n, T]
         if lens.iter().all(|&l| l >= t) {
             return Ok(s);
         }
@@ -130,5 +145,43 @@ impl Indexer {
         }
         let keep = ge(&score, &kth(&score, k)?)?.mul(&below(lens, t)?)?;
         Ok(Selection::Mask(keep_or_neg(&keep, &Tensor::full(0.0, &[1, 1], DType::F32))?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lapid::Device;
+
+    use super::*;
+
+    fn tensor(shape: &[usize], seed: u64) -> Tensor {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let v: Vec<f32> = (0..shape.iter().product::<usize>())
+            .map(|_| {
+                x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = x;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                (z >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+            })
+            .collect();
+        Tensor::from_f32(&v, shape).unwrap()
+    }
+
+    /// Any block size gives the unblocked scores.
+    #[test]
+    fn blocked_scores_match() {
+        let (n, h, d, t) = (9, 4, 8, 17);
+        let (q, w, keys) = (tensor(&[n * h, d], 1), tensor(&[n, h], 2), tensor(&[t, d], 3));
+        let dev = Device::cpu();
+        let want = dev.to_vec_f32(&weighted_scores(&q, &w, &keys, h, n).unwrap()).unwrap();
+        assert_eq!(want.len(), n * t);
+        for qb in (1..=n + 1).chain([100]) {
+            let got = dev.to_vec_f32(&weighted_scores(&q, &w, &keys, h, qb).unwrap()).unwrap();
+            assert_eq!(got.len(), want.len(), "qb {qb}");
+            let worst = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert!(worst < 1e-5, "qb {qb}: max diff {worst}");
+        }
     }
 }
