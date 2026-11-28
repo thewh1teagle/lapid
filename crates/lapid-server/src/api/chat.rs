@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::dsml::{ToolCall, split, Filter};
 use super::{ApiError, ApiResult, Shared, new_id, now_secs, parse_json};
 use lapid_hub::runtime::serve::{Capability, ChatParams, Delta, GenParams, GenSummary};
 use crate::worker::Worker;
@@ -200,6 +201,15 @@ async fn collect(mut rx: mpsc::Receiver<GenEvent>) -> ApiResult<(String, String,
     Err(ApiError::from(lapid::Error::new("internal", "generation ended without a result")))
 }
 
+/// One OpenAI tool call; `index` only in streaming deltas.
+fn tool_call_json(c: &ToolCall, index: Option<usize>) -> Value {
+    let mut v = json!({"id": new_id("call"), "type": "function", "function": {"name": c.name, "arguments": c.arguments}});
+    if let Some(i) = index {
+        v["index"] = json!(i);
+    }
+    v
+}
+
 fn data(v: &Value) -> Result<Event, Infallible> {
     Ok(Event::default().data(v.to_string()))
 }
@@ -209,16 +219,16 @@ fn sse(
     rx: mpsc::Receiver<GenEvent>,
     first: Option<Value>,
     include_usage: bool,
-    chunk: impl Fn(Option<&Delta>, Option<&GenSummary>) -> Value + Send + 'static,
+    chunk: impl Fn(Option<&Delta>, Option<&GenSummary>) -> Vec<Value> + Send + 'static,
     usage_chunk: impl Fn(&GenSummary) -> Value + Send + 'static,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let head = stream::iter(first.map(|v| data(&v)));
     let body = ReceiverStream::new(rx).flat_map(move |ev| {
         let mut out = Vec::new();
         match ev {
-            GenEvent::Delta(d) => out.push(data(&chunk(Some(&d), None))),
+            GenEvent::Delta(d) => out.extend(chunk(Some(&d), None).iter().map(data)),
             GenEvent::Done(s) => {
-                out.push(data(&chunk(None, Some(&s))));
+                out.extend(chunk(None, Some(&s)).iter().map(data));
                 if include_usage {
                     out.push(data(&usage_chunk(&s)));
                 }
@@ -243,9 +253,11 @@ pub async fn chat_completions(State(st): State<Shared>, body: Bytes) -> ApiResul
         .as_ref()
         .and_then(|k| k.get("enable_thinking"))
         .and_then(Value::as_bool);
+    let tools = req.tools.filter(|t| !t.is_null());
+    let has_tools = tools.as_ref().is_some_and(|t| t.as_array().is_none_or(|a| !a.is_empty()));
     let params = ChatParams {
         messages: normalize_messages(req.messages)?,
-        tools: req.tools.filter(|t| !t.is_null()),
+        tools,
         enable_thinking,
         sampling: req.sampling.params()?,
     };
@@ -253,13 +265,19 @@ pub async fn chat_completions(State(st): State<Shared>, body: Bytes) -> ApiResul
     let (id, created) = (new_id("chatcmpl"), now_secs());
     if !req.stream {
         let (content, reasoning, s) = collect(rx).await?;
+        let (content, calls) = if has_tools { split(&content) } else { (content, Vec::new()) };
         let mut message = json!({"role": "assistant", "content": content});
         if !reasoning.is_empty() {
             message["reasoning_content"] = json!(reasoning);
         }
+        let mut reason = finish(&s);
+        if !calls.is_empty() {
+            message["tool_calls"] = Value::Array(calls.iter().map(|c| tool_call_json(c, None)).collect());
+            reason = "tool_calls";
+        }
         return Ok(axum::Json(json!({
             "id": id, "object": "chat.completion", "created": created, "model": model,
-            "choices": [{"index": 0, "message": message, "finish_reason": finish(&s), "logprobs": null}],
+            "choices": [{"index": 0, "message": message, "finish_reason": reason, "logprobs": null}],
             "usage": usage(&s),
             "timings": s.timings(),
         }))
@@ -273,20 +291,41 @@ pub async fn chat_completions(State(st): State<Shared>, body: Bytes) -> ApiResul
         v
     };
     let b1 = base.clone();
+    let filter = std::sync::Mutex::new(Filter::default());
     let chunk = move |d: Option<&Delta>, s: Option<&GenSummary>| {
-        let mut v = b1.clone();
+        let mk = |delta: Value, fin: Value| {
+            let mut v = b1.clone();
+            v["choices"] = json!([{"index": 0, "delta": delta, "finish_reason": fin}]);
+            v
+        };
+        let mut out = Vec::new();
+        let mut f = filter.lock().unwrap_or_else(|e| e.into_inner());
         match (d, s) {
-            (Some(Delta::Content(t)), _) => v["choices"] = json!([{"index": 0, "delta": {"content": t}, "finish_reason": null}]),
-            (Some(Delta::Reasoning(t)), _) => {
-                v["choices"] = json!([{"index": 0, "delta": {"reasoning_content": t}, "finish_reason": null}])
+            (Some(Delta::Content(t)), _) => {
+                let text = if has_tools { f.push(t) } else { t.clone() };
+                if !text.is_empty() {
+                    out.push(mk(json!({"content": text}), Value::Null));
+                }
             }
+            (Some(Delta::Reasoning(t)), _) => out.push(mk(json!({"reasoning_content": t}), Value::Null)),
             (None, Some(s)) => {
-                v["choices"] = json!([{"index": 0, "delta": {}, "finish_reason": finish(s)}]);
-                v["timings"] = s.timings();
+                let (tail, calls) = if has_tools { f.finish() } else { (String::new(), Vec::new()) };
+                if !tail.is_empty() {
+                    out.push(mk(json!({"content": tail}), Value::Null));
+                }
+                let mut reason = finish(s);
+                if !calls.is_empty() {
+                    let items: Vec<Value> = calls.iter().enumerate().map(|(i, c)| tool_call_json(c, Some(i))).collect();
+                    out.push(mk(json!({"tool_calls": items}), Value::Null));
+                    reason = "tool_calls";
+                }
+                let mut last = mk(json!({}), json!(reason));
+                last["timings"] = s.timings();
+                out.push(last);
             }
             (None, None) => {}
         }
-        v
+        out
     };
     let usage_chunk = move |s: &GenSummary| {
         let mut v = base.clone();
@@ -329,9 +368,9 @@ pub async fn completions(State(st): State<Shared>, body: Bytes) -> ApiResult<Res
                 v["choices"] = json!([{"index": 0, "text": "", "finish_reason": finish(s), "logprobs": null}]);
                 v["timings"] = s.timings();
             }
-            (None, None) => {}
+            (None, None) => return Vec::new(),
         }
-        v
+        vec![v]
     };
     let usage_chunk = move |s: &GenSummary| {
         let mut v = base.clone();

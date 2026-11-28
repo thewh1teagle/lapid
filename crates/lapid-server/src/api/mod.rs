@@ -5,6 +5,7 @@ mod chat;
 mod misc;
 mod openapi;
 mod realtime;
+mod dsml;
 
 use std::sync::Arc;
 use std::time::Instant;
