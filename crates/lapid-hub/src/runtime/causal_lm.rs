@@ -189,6 +189,11 @@ pub fn step<M: CausalLm>(model: &M, device: &Device, ids: &[u32], state: &mut M:
     }
     let chunks: Vec<&[u32]> = ids.chunks(model.prefill_chunk().max(1)).collect();
     let last = chunks.len() - 1;
+    // Long prompts take minutes per chunk when experts stream from disk: report progress.
+    let (total, n_chunks, t0, mut done) = (ids.len(), chunks.len(), std::time::Instant::now(), 0usize);
+    if n_chunks > 1 {
+        tracing::info!("prefill started: {total} tokens in {n_chunks} chunks of up to {}", model.prefill_chunk());
+    }
     for (ci, chunk) in chunks.into_iter().enumerate() {
         let _step = tracing::trace_span!("lm.step").entered();
         let rows = if ci == last { Rows::Last } else { Rows::None };
@@ -202,6 +207,18 @@ pub fn step<M: CausalLm>(model: &M, device: &Device, ids: &[u32], state: &mut M:
         };
         drop(build);
         let realized = eval_commit_owned(device, out.into_iter().collect(), state, chunk.len())?;
+        done += chunk.len();
+        if n_chunks > 1 {
+            let secs = t0.elapsed().as_secs_f64();
+            let left = secs / done as f64 * (total - done) as f64;
+            tracing::info!(
+                "prefill {done}/{total} tokens ({:.0}%), chunk {}/{n_chunks}, {:.0}s elapsed, ~{:.0}s left",
+                100.0 * done as f64 / total as f64,
+                ci + 1,
+                secs,
+                left
+            );
+        }
         if ci == last {
             let logits = realized.first().ok_or_else(|| Error::new("backend", "no logits realized"))?;
             let v = tracing::trace_span!("lm.read").in_scope(|| device.to_vec_f32(logits));

@@ -158,7 +158,16 @@ fn out_view(p: &mut Params, d: &MatMulDims) -> Result<()> {
             + (d.m as u128 - 1) * d.out.row_stride as u128
             + d.n as u128;
         if last > u32::MAX as u128 {
-            return Err(Error::new("too_large", "matmul output exceeds 32-bit indexing"));
+            return Err(Error::new(
+                "too_large",
+                format!(
+                    "matmul output exceeds 32-bit indexing (batch {}, m {}, n {}, last element {last} > {})",
+                    d.batch,
+                    d.m,
+                    d.n,
+                    u32::MAX
+                ),
+            ));
         }
     }
     p.u(d.out.offset)?.u(d.out.batch_stride)?.u(d.out.row_stride)?;
