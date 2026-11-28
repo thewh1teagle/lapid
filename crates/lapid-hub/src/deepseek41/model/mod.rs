@@ -388,6 +388,18 @@ impl CausalLm for Deepseek41Model {
         Ok(Some(self.head.forward(&h)?))
     }
 }
+/// Elements one `[queries, heads, keys]` f32 attention-score tensor may hold: queries go
+/// through attention and the indexer in blocks of that size (512 MiB per copy by default;
+/// `LAPID_ATTN_SCORE_MIB` changes it). It also keeps a matmul output under 2^32 elements,
+/// the CUDA kernels' 32-bit indexing limit.
+pub(crate) fn score_budget() -> usize {
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let mib = std::env::var("LAPID_ATTN_SCORE_MIB").ok().and_then(|v| v.parse::<usize>().ok()).filter(|&m| m > 0).unwrap_or(512);
+        (mib << 20) / 4
+    })
+}
+
 #[cfg(test)]
 mod bench_tests;
 #[cfg(test)]
